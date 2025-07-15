@@ -1,12 +1,11 @@
 from launch import LaunchDescription
-from launch.actions import GroupAction
 from launch_ros.actions import Node
+from launch.actions import GroupAction
 
 def generate_launch_description():
     ld = LaunchDescription()
 
     camera_names = ['front_up', 'front_down', 'left', 'right']
-    
     yolo_nodes = []
 
     for name in camera_names:
@@ -16,8 +15,9 @@ def generate_launch_description():
         yolo_node = Node(
             package='perception_yolov8_pkg',
             executable='yolov8_node',
-            name=f'yolov8_{name}',
+            name=f'yolov8_{name}',  # ✅ prefix 제거
             output='screen',
+            emulate_tty=True,
             parameters=[
                 {'model': 'best.pt'},
                 {'device': 'cuda:0'},
@@ -30,9 +30,7 @@ def generate_launch_description():
                 ('detections', detection_topic)
             ]
         )
-
         yolo_nodes.append(yolo_node)
 
     ld.add_action(GroupAction(yolo_nodes))
-
     return ld

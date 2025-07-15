@@ -50,41 +50,33 @@ class Yolov8Node(LifecycleNode):
 
     def __init__(self, **kwargs) -> None:
         super().__init__("yolov8_node", **kwargs)
-
         #---------------Variable Setting---------------
         # 딥러닝 모델 pt 파일명 작성
         #self.declare_parameter("model", "yolov8m.pt")
-        self.declare_parameter("model", "best.pt")
+        #self.declare_parameter("model", "best.pt")
 
         # 추론 하드웨어 선택 (cpu / gpu)
         #self.declare_parameter("device", "cpu")
-        self.declare_parameter("device", "cuda:0")
+        #self.declare_parameter("device", "cuda:0")
         #----------------------------------------------
-
+        self.declare_parameter("image_topic", "image_raw")
+        self.declare_parameter("model", "best.pt")
+        self.declare_parameter("device", "cuda:0")
         self.declare_parameter("threshold", 0.5)
         self.declare_parameter("enable", True)
-        self.declare_parameter("image_reliability",
-                               QoSReliabilityPolicy.RELIABLE)
+        self.declare_parameter("image_reliability", QoSReliabilityPolicy.RELIABLE)
 
         self.get_logger().info('Yolov8Node created')
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
-        self.get_logger().info(f'Configuring {self.get_name()}')
+        self.get_logger().info(f'🔧 Configuring {self.get_name()}')
 
-        self.model = self.get_parameter(
-            "model").get_parameter_value().string_value
-
-        self.device = self.get_parameter(
-            "device").get_parameter_value().string_value
-
-        self.threshold = self.get_parameter(
-            "threshold").get_parameter_value().double_value
-
-        self.enable = self.get_parameter(
-            "enable").get_parameter_value().bool_value
-
-        self.reliability = self.get_parameter(
-            "image_reliability").get_parameter_value().integer_value
+        self.model = self.get_parameter("model").get_parameter_value().string_value
+        self.device = self.get_parameter("device").get_parameter_value().string_value
+        self.threshold = self.get_parameter("threshold").get_parameter_value().double_value
+        self.enable = self.get_parameter("enable").get_parameter_value().bool_value
+        self.reliability = self.get_parameter("image_reliability").get_parameter_value().integer_value
+        self.image_topic = self.get_parameter("image_topic").get_parameter_value().string_value
 
         self.image_qos_profile = QoSProfile(
             reliability=self.reliability,
@@ -93,14 +85,12 @@ class Yolov8Node(LifecycleNode):
             depth=1
         )
 
-        self._pub = self.create_lifecycle_publisher(
-            DetectionArray, "detections", 10)
-        self._srv = self.create_service(
-            SetBool, "enable", self.enable_cb
-        )
+        self._pub = self.create_lifecycle_publisher(DetectionArray, "detections", 10)
+        self._srv = self.create_service(SetBool, "enable", self.enable_cb)
         self.cv_bridge = CvBridge()
 
         return TransitionCallbackReturn.SUCCESS
+
 
     def enable_cb(self, request, response):
         self.enable = request.data

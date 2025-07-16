@@ -19,20 +19,20 @@ geometry_msgs::msg::TransformStamped loadTransformFromYaml(const std::string& fi
     auto t = config["lidar_camera_tf"]["ros__parameters"]["translation"];
     auto r = config["lidar_camera_tf"]["ros__parameters"]["rotation"];
 
-    // translation 변환 (MATLAB → ROS 좌표계)
-    double x_m = t[0].as<double>();
-    double y_m = t[1].as<double>();
-    double z_m = t[2].as<double>();
+    tf.header.frame_id       = config["lidar_camera_tf"]["ros__parameters"]["parent_frame"].as<std::string>();
+    tf.child_frame_id        = config["lidar_camera_tf"]["ros__parameters"]["child_frame"].as<std::string>();
 
-        tf.transform.translation.x = -z_m;
-        tf.transform.translation.y = x_m;
-        tf.transform.translation.z = y_m;
+    // ── ① translation 그대로 ──────────────────────────────
+    tf.transform.translation.x = t[0].as<double>();   // x
+    tf.transform.translation.y = t[1].as<double>();   // y
+    tf.transform.translation.z = t[2].as<double>();   // z
 
-    // rotation은 아직 그대로 두고 테스트해도 됨
-    tf.transform.rotation.x = r[0].as<double>();
-    tf.transform.rotation.y = r[1].as<double>();
-    tf.transform.rotation.z = -r[2].as<double>();
-    tf.transform.rotation.w = -r[3].as<double>();
+    // ── ② rotation 그대로 (부호 뒤집지 않기) ────────────────
+    tf.transform.rotation.x = r[0].as<double>();      // qx
+    tf.transform.rotation.y = r[1].as<double>();      // qy
+    tf.transform.rotation.z = r[2].as<double>();      // qz  ← 부호 수정 안 함
+    tf.transform.rotation.w = r[3].as<double>();      // qw  ← 부호 수정 안 함
+
 
     return tf;
 }
@@ -42,7 +42,7 @@ int main(int argc, char * argv[]) {
     auto node = rclcpp::Node::make_shared("lidar_to_camera_tf_broadcaster");
     tf2_ros::StaticTransformBroadcaster broadcaster(node);
 
-    std::string base_path = node->declare_parameter("config_path", "/home/moonshot/ros2_ws/src/sensor_initialize/config/");
+    std::string base_path = node->declare_parameter("config_path", "/home/mangggong/ros2_ws/src/sensor_initialize/config/");
 
     std::vector<std::string> file_names = {
         "lidar_to_cam1_front_up_tf.yaml",

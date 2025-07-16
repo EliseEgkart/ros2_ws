@@ -95,18 +95,19 @@ def generate_launch_description():
             }]
         ),
 
-        # 6) 센서 융합 노드
-        Node(
-            package='sensor_fusion_pkg',
-            executable='bbox_projector_node',
-            name='bbox_projector',
-            output='screen',
-            parameters=[{
-                'detection_topic': '/detections/front_up',      # 또는 전부 처리하도록 반복/매핑
-                'lidar_topic':    '/lidar_preprocessed',
-                'camera_frame':   'camera_front_up',           # TF 브로드캐스트 child_frame_id
-                'lidar_frame':    'velodyne'
-            }]
-        ),
+         # 6) 센서 융합 노드
+         Node(
+             package='sensor_fusion_pkg',
+             executable='bbox_projector_node',
+             name='bbox_projector',
+             output='screen',
+             parameters=[{
+                 'camera_frame':   'camera_front_up',
+                 'camera_frame':   'camera_front_up_frame',
+                 'detection_topic': '/detections/front_up',
+                 'lidar_topic':    '/lidar_preprocessed',
+                 'lidar_frame':    'velodyne'
+             }]
+         ),
     ])
 

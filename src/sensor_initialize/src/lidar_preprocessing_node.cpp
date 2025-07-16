@@ -31,11 +31,11 @@ private:
     const float voxel_leaf_size_ = 0.05f;
 
     // RANSAC 설정
-    const double ground_dist_thresh_ = 0.2;
+    const double ground_dist_thresh_ = 0.1;
 
     // ROI 설정 (단위: m)
-    const float roi_min_x_ = 0.2f, roi_max_x_ = 4.0f;
-    const float roi_min_y_ = -1.0f, roi_max_y_ = 1.0f;
+    const float roi_min_x_ = -0.5f, roi_max_x_ = 5.5f;
+    const float roi_min_y_ = -2.5f, roi_max_y_ = 2.5f;
     const float roi_min_z_ = -0.5f, roi_max_z_ = 1.0f;
 
     // =====================================
@@ -53,30 +53,30 @@ private:
         voxel.setLeafSize(voxel_leaf_size_, voxel_leaf_size_, voxel_leaf_size_);
         voxel.filter(*cloud_voxel);
 
-        // [3] RANSAC 기반 Ground 제거
-        pcl::SACSegmentation<pcl::PointXYZI> seg;
-        seg.setOptimizeCoefficients(true);
-        seg.setModelType(pcl::SACMODEL_PLANE);
-        seg.setMethodType(pcl::SAC_RANSAC);
-        seg.setDistanceThreshold(ground_dist_thresh_);
-        seg.setInputCloud(cloud_voxel);
+        // // [3] RANSAC 기반 Ground 제거
+        // pcl::SACSegmentation<pcl::PointXYZI> seg;
+        // seg.setOptimizeCoefficients(true);
+        // seg.setModelType(pcl::SACMODEL_PLANE);
+        // seg.setMethodType(pcl::SAC_RANSAC);
+        // seg.setDistanceThreshold(ground_dist_thresh_);
+        // seg.setInputCloud(cloud_voxel);
 
-        pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
-        pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
-        seg.segment(*inliers, *coefficients);
+        // pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+        // pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
+        // seg.segment(*inliers, *coefficients);
 
-        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_no_ground(new pcl::PointCloud<pcl::PointXYZI>());
-        pcl::ExtractIndices<pcl::PointXYZI> extract;
-        extract.setInputCloud(cloud_voxel);
-        extract.setIndices(inliers);
-        extract.setNegative(true);  // inlier 제거 (즉, ground 제거)
-        extract.filter(*cloud_no_ground);
+        // pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_no_ground(new pcl::PointCloud<pcl::PointXYZI>());
+        // pcl::ExtractIndices<pcl::PointXYZI> extract;
+        // extract.setInputCloud(cloud_voxel);
+        // extract.setIndices(inliers);
+        // extract.setNegative(true);  // inlier 제거 (즉, ground 제거)
+        // extract.filter(*cloud_no_ground);
 
         // [4] ROI 필터링
         pcl::PassThrough<pcl::PointXYZI> pass;
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_roi(new pcl::PointCloud<pcl::PointXYZI>());
 
-        pass.setInputCloud(cloud_no_ground);
+        pass.setInputCloud(cloud_voxel);
         pass.setFilterFieldName("x");
         pass.setFilterLimits(roi_min_x_, roi_max_x_);
         pass.filter(*cloud_roi);

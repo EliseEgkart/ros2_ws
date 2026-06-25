@@ -4994,7 +4994,7 @@ def fine_correct(final_obj_fine,
 
     return fine_pose_table, fine_class_index
 
-def search_bricks(mode, yolo_dir, color_rgb, depth, intrinsics, scale, V_visualize=True):
+def search_bricks(mode, yolo_dir, color_rgb, depth, intrinsics, scale, yolo_model=None, half=False, V_visualize=True):
 
     if mode in ["coarse", "fine"]:
         pass
@@ -5018,10 +5018,12 @@ def search_bricks(mode, yolo_dir, color_rgb, depth, intrinsics, scale, V_visuali
         print("[DEBUG] MODEL_PATH:", MODEL_PATH)
         print("[DEBUG] MODEL_EXISTS:", os.path.exists(MODEL_PATH))
 
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"YOLO model not found: {MODEL_PATH}")
-
-    model = YOLO(MODEL_PATH)
+    if yolo_model is not None:
+        model = yolo_model
+    else:
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(f"YOLO model not found: {MODEL_PATH}")
+        model = YOLO(MODEL_PATH)
     target_classes = [0, 1, 2, 3, 4, 5, 6, 7, 8]
 
     results, mask_binary, vis_yolo = detect_objects_yolo(

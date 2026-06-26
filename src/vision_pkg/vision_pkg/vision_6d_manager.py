@@ -1,0 +1,324 @@
+import os
+import time
+from dataclasses import dataclass
+
+os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/ultralytics")
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+import cv2
+import numpy as np
+import pyrealsense2 as rs
+from ultralytics import YOLO
+
+
+WORKSPACE_DIR = "/home/st02/ros2_ws"
+DET_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best.pt")
+SEG_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best_old.pt")
+
+
+ID_TO_CLASS = {
+    1: "2x2_red",
+    2: "2x2_green",
+    3: "2x2_blue",
+    4: "2x2_yellow",
+    5: "4x2_red",
+    6: "4x2_green",
+    7: "4x2_blue",
+    8: "4x2_yellow",
+    999: "assembly",
+    888: "assembly_fine",
+    13: "Magnet",
+    34: "Battery",
+    81: "Estop",
+    241: "Trafficlight",
+    442: "carrot",
+    462: "small tree",
+    711: "hammer",
+    4482: "bigcarrot",
+    8518: "burger",
+    46262: "bigtree",
+    48132: "icecream",
+}
+
+
+@dataclass
+class PoseResult:
+    success: bool
+    target_id: int | None = None
+    class_name: str | None = None
+    x_m: float | None = None
+    y_m: float | None = None
+    z_m: float | None = None
+    yaw_deg: float | None = None
+    layer: int | None = None
+    reason: str | None = None
+
+
+class Vision6DPoseManager:
+    """Ensemble detector based on vision_6Dpose_node.py.
+
+    best.pt is used for stable detection coordinates. best_old.pt is used for
+    segmentation masks and yaw extraction. The public output is kept compatible
+    with arm_interfaces/srv/GetTargetPose.
+    """
+
+    def __init__(
+        self,
+        logger=None,
+        det_model_path=DET_MODEL_PATH,
+        seg_model_path=SEG_MODEL_PATH,
+        sample_sec=1.2,
+        min_samples=5,
+        match_distance_px=40.0,
+    ):
+        self.logger = logger
+        self.det_model_path = det_model_path
+        self.seg_model_path = seg_model_path
+        self.sample_sec = float(sample_sec)
+        self.min_samples = int(min_samples)
+        self.match_distance_px = float(match_distance_px)
+
+        self._check_model_file(self.det_model_path)
+        self._check_model_file(self.seg_model_path)
+
+        self.model_det = YOLO(self.det_model_path)
+        self.model_seg = YOLO(self.seg_model_path)
+
+        self.pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        profile = self.pipeline.start(config)
+        self.align = rs.align(rs.stream.color)
+        self.intrinsics = (
+            profile.get_stream(rs.stream.color)
+            .as_video_stream_profile()
+            .get_intrinsics()
+        )
+
+        self._log_info(
+            f"6D ensemble loaded: det={self.det_model_path}, seg={self.seg_model_path}, "
+            f"det_task={self.model_det.task}, seg_task={self.model_seg.task}"
+        )
+
+    def shutdown(self):
+        try:
+            self.pipeline.stop()
+        except Exception as exc:
+            self._log_warn(f"RealSense pipeline stop failed: {exc}")
+
+    def run_pipeline_by_id(self, target_id):
+        try:
+            target_id = int(target_id)
+        except Exception:
+            return PoseResult(False, reason=f"invalid target id: {target_id}")
+
+        class_name = ID_TO_CLASS.get(target_id)
+        if class_name is None:
+            return PoseResult(
+                False,
+                target_id=target_id,
+                reason=f"unknown target id: {target_id}",
+            )
+
+        return self.run_pipeline_by_class(target_id, class_name)
+
+    def run_pipeline_by_class(self, target_id, class_name):
+        target_key = self._normalize_class_name(class_name)
+        samples = []
+        start_time = time.time()
+
+        self._log_info(f"6D ensemble search start: id={target_id}, class={class_name}")
+
+        while time.time() - start_time < self.sample_sec:
+            try:
+                frames = self.pipeline.wait_for_frames(timeout_ms=500)
+                aligned = self.align.process(frames)
+                depth_frame = aligned.get_depth_frame()
+                color_frame = aligned.get_color_frame()
+                if not color_frame or not depth_frame:
+                    continue
+
+                image = np.asanyarray(color_frame.get_data())
+                det_result = self.model_det(image, verbose=False)[0]
+                seg_result = self.model_seg(image, verbose=False)[0]
+                if det_result.boxes is None:
+                    continue
+
+                all_z_values = []
+                frame_targets = []
+
+                for box in det_result.boxes:
+                    cls_name = det_result.names[int(box.cls[0])]
+                    cls_key = self._normalize_class_name(cls_name)
+
+                    xyxy = box.xyxy[0].cpu().numpy()
+                    u = int((xyxy[0] + xyxy[2]) / 2)
+                    v = int((xyxy[1] + xyxy[3]) / 2)
+
+                    z = self.get_valid_depth(depth_frame, u, v)
+                    if z <= 0.0:
+                        continue
+
+                    all_z_values.append(z)
+                    if not self._target_matches(target_key, cls_key):
+                        continue
+
+                    yaw = self.find_yaw_from_segmentation(seg_result, u, v)
+                    frame_targets.append(
+                        {
+                            "u": u,
+                            "v": v,
+                            "z": z,
+                            "yaw": yaw,
+                            "detected_class": str(cls_name),
+                        }
+                    )
+
+                if frame_targets and all_z_values:
+                    floor_z = max(all_z_values)
+                    best = min(frame_targets, key=lambda item: item["z"])
+                    layer = int(round((floor_z - best["z"]) / 0.016)) + 1
+                    x_m, y_m, z_m = rs.rs2_deproject_pixel_to_point(
+                        self.intrinsics,
+                        [best["u"], best["v"]],
+                        best["z"],
+                    )
+                    samples.append(
+                        [
+                            float(x_m),
+                            float(y_m),
+                            float(z_m),
+                            float(best["yaw"]),
+                            float(layer),
+                            best["detected_class"],
+                        ]
+                    )
+
+                time.sleep(0.01)
+            except Exception as exc:
+                self._log_warn(f"6D ensemble frame skipped: {exc}")
+
+        if len(samples) < self.min_samples:
+            return PoseResult(
+                False,
+                target_id=target_id,
+                class_name=class_name,
+                reason=f"not enough samples: {len(samples)}/{self.min_samples}",
+            )
+
+        numeric_samples = np.array([sample[:5] for sample in samples], dtype=float)
+        median_pose = np.median(numeric_samples, axis=0)
+        detected_class = self._majority_class([sample[5] for sample in samples])
+
+        result = PoseResult(
+            True,
+            target_id=target_id,
+            class_name=detected_class or class_name,
+            x_m=float(median_pose[0]),
+            y_m=float(median_pose[1]),
+            z_m=float(median_pose[2]),
+            yaw_deg=float(median_pose[3]),
+            layer=int(round(float(median_pose[4]))),
+        )
+
+        self._log_info(
+            "6D ensemble target fixed: "
+            f"id={target_id}, class={result.class_name}, "
+            f"x={result.x_m * 1000.0:.1f}mm, "
+            f"y={result.y_m * 1000.0:.1f}mm, "
+            f"z={result.z_m * 1000.0:.1f}mm, "
+            f"yaw={result.yaw_deg:.1f}deg, layer={result.layer}"
+        )
+        return result
+
+    def find_yaw_from_segmentation(self, seg_result, target_u, target_v):
+        if seg_result.masks is None or seg_result.boxes is None:
+            return 0.0
+
+        min_dist = float("inf")
+        best_mask_pts = None
+
+        for idx, seg_box in enumerate(seg_result.boxes):
+            xyxy = seg_box.xyxy[0].cpu().numpy()
+            seg_u = int((xyxy[0] + xyxy[2]) / 2)
+            seg_v = int((xyxy[1] + xyxy[3]) / 2)
+            dist = ((target_u - seg_u) ** 2 + (target_v - seg_v) ** 2) ** 0.5
+
+            if dist < self.match_distance_px and dist < min_dist:
+                min_dist = dist
+                if len(seg_result.masks.xy) > idx:
+                    best_mask_pts = np.int32(seg_result.masks.xy[idx])
+
+        if best_mask_pts is None or len(best_mask_pts) < 3:
+            return 0.0
+
+        moments = cv2.moments(best_mask_pts)
+        if moments["m00"] == 0:
+            return 0.0
+
+        rect = cv2.minAreaRect(best_mask_pts)
+        return self.calculate_refined_yaw(rect)
+
+    @staticmethod
+    def calculate_refined_yaw(rect):
+        (_, _), (width, height), angle = rect
+        if width < height:
+            yaw = angle
+        else:
+            yaw = angle + 90.0
+
+        if yaw > 90.0:
+            yaw -= 180.0
+        if yaw < -90.0:
+            yaw += 180.0
+        return float(yaw)
+
+    @staticmethod
+    def get_valid_depth(depth_frame, u, v, search_radius=10):
+        z = depth_frame.get_distance(u, v)
+        if z > 0.0:
+            return float(z)
+
+        for radius in range(1, search_radius + 1):
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    nu = u + dx
+                    nv = v + dy
+                    if 0 <= nu < 640 and 0 <= nv < 480:
+                        z = depth_frame.get_distance(nu, nv)
+                        if z > 0.0:
+                            return float(z)
+        return 0.0
+
+    @staticmethod
+    def _normalize_class_name(name):
+        return str(name).lower().replace(" ", "").replace("-", "_")
+
+    @staticmethod
+    def _target_matches(target_key, detected_key):
+        if target_key == detected_key:
+            return True
+        return target_key in detected_key or detected_key in target_key
+
+    @staticmethod
+    def _majority_class(names):
+        counts = {}
+        for name in names:
+            counts[name] = counts.get(name, 0) + 1
+        if not counts:
+            return None
+        return max(counts.items(), key=lambda item: item[1])[0]
+
+    @staticmethod
+    def _check_model_file(path):
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"YOLO model not found: {path}")
+
+    def _log_info(self, message):
+        if self.logger is not None:
+            self.logger.info(message)
+
+    def _log_warn(self, message):
+        if self.logger is not None:
+            self.logger.warn(message)

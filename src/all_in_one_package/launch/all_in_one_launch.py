@@ -82,6 +82,9 @@ def generate_launch_description():
                     executable='waypoint_marker_publisher',
                     name='waypoint_marker_publisher',
                     output='screen',
+                    parameters=[{
+                        'waypoints_file': '/home/st02/ros2_ws/src/robocup_navigator/params/stations_robocup.yaml'
+                    }],
                 ),
             ]
         ),

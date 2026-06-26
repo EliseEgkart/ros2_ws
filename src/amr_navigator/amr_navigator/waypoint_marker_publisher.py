@@ -19,7 +19,7 @@ class WaypointMarkerPublisher(Node):
         self.declare_parameter('arrow_length', 0.45)
         self.declare_parameter('arrow_shaft_diameter', 0.07)
         self.declare_parameter('arrow_head_diameter', 0.16)
-        self.declare_parameter('text_scale', 0.22)
+        self.declare_parameter('text_scale', 0.11)
         self.declare_parameter('text_z_offset', 0.35)
         self.declare_parameter('red', 1.0)
         self.declare_parameter('green', 0.0)

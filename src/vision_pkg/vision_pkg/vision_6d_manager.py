@@ -2,7 +2,7 @@ import os
 import time
 from dataclasses import dataclass
 
-os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/ultralytics")
+os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import cv2
@@ -14,6 +14,10 @@ from ultralytics import YOLO
 WORKSPACE_DIR = os.environ.get("ROS2_WS", "/home/st02/ros2_ws")
 DET_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best.pt")
 SEG_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best_old.pt")
+COMP_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best_comp.pt")
+
+BRICK_IDS = {1, 2, 3, 4, 5, 6, 7, 8}
+COMPONENT_IDS = {13, 34, 81, 241, 442, 462, 711, 4482, 8518, 46262, 48132}
 
 
 ID_TO_CLASS = {
@@ -67,6 +71,7 @@ class Vision6DPoseManager:
         logger=None,
         det_model_path=DET_MODEL_PATH,
         seg_model_path=SEG_MODEL_PATH,
+        comp_model_path=COMP_MODEL_PATH,
         sample_sec=1.2,
         min_samples=5,
         match_distance_px=40.0,
@@ -76,6 +81,7 @@ class Vision6DPoseManager:
         self.logger = logger
         self.det_model_path = det_model_path
         self.seg_model_path = seg_model_path
+        self.comp_model_path = comp_model_path
         self.sample_sec = float(sample_sec)
         self.min_samples = int(min_samples)
         self.match_distance_px = float(match_distance_px)
@@ -84,9 +90,11 @@ class Vision6DPoseManager:
 
         self._check_model_file(self.det_model_path)
         self._check_model_file(self.seg_model_path)
+        self._check_model_file(self.comp_model_path)
 
         self.model_det = YOLO(self.det_model_path)
         self.model_seg = YOLO(self.seg_model_path)
+        self.model_comp = YOLO(self.comp_model_path)
 
         self.pipeline = rs.pipeline()
         config = rs.config()
@@ -102,7 +110,9 @@ class Vision6DPoseManager:
 
         self._log_info(
             f"6D ensemble loaded: det={self.det_model_path}, seg={self.seg_model_path}, "
+            f"comp={self.comp_model_path}, "
             f"det_task={self.model_det.task}, seg_task={self.model_seg.task}, "
+            f"comp_task={self.model_comp.task}, "
             f"visualize={self.visualize}"
         )
 
@@ -134,11 +144,15 @@ class Vision6DPoseManager:
         return self.run_pipeline_by_class(target_id, class_name)
 
     def run_pipeline_by_class(self, target_id, class_name):
+        model_det, model_seg, pipeline_name = self._select_models(target_id)
         target_key = self._normalize_class_name(class_name)
         samples = []
         start_time = time.time()
 
-        self._log_info(f"6D ensemble search start: id={target_id}, class={class_name}")
+        self._log_info(
+            f"6D ensemble search start: id={target_id}, class={class_name}, "
+            f"pipeline={pipeline_name}"
+        )
 
         while time.time() - start_time < self.sample_sec:
             try:
@@ -150,8 +164,8 @@ class Vision6DPoseManager:
                     continue
 
                 image = np.asanyarray(color_frame.get_data())
-                det_result = self.model_det(image, verbose=False)[0]
-                seg_result = self.model_seg(image, verbose=False)[0]
+                det_result = model_det(image, verbose=False)[0]
+                seg_result = model_seg(image, verbose=False)[0]
                 if det_result.boxes is None:
                     continue
 
@@ -284,6 +298,13 @@ class Vision6DPoseManager:
             f"yaw={result.yaw_deg:.1f}deg, layer={result.layer}"
         )
         return result
+
+    def _select_models(self, target_id):
+        if target_id in COMPONENT_IDS:
+            return self.model_comp, self.model_comp, "component"
+        if target_id in BRICK_IDS:
+            return self.model_det, self.model_seg, "brick"
+        return self.model_det, self.model_seg, "default"
 
     def show_visualization(self, det_result, detections, target_class, best=None):
         image = det_result.plot()

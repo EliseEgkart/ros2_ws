@@ -22,6 +22,11 @@ def generate_launch_description():
         default_value='false',
         description='Show OpenCV visualization window for vision_node',
     )
+    vision_comp_model_path_arg = DeclareLaunchArgument(
+        'vision_comp_model_path',
+        default_value='/home/st02/ros2_ws/best_comp.pt',
+        description='YOLO segmentation model path for component/product picking',
+    )
 
     vision_node = Node(
         package='vision_pkg',
@@ -31,6 +36,7 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[{
             'visualize': LaunchConfiguration('vision_visualize'),
+            'comp_model_path': LaunchConfiguration('vision_comp_model_path'),
         }],
     )
 
@@ -60,6 +66,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         vision_visualize_arg,
+        vision_comp_model_path_arg,
         vision_node,
         gripper_node,
         cargo_manager_node,

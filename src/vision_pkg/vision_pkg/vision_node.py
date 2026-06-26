@@ -2,7 +2,11 @@
 import rclpy
 from rclpy.node import Node
 from arm_interfaces.srv import GetTargetPose
-from vision_pkg.vision_6d_manager import Vision6DPoseManager
+from vision_pkg.vision_6d_manager import (
+    DET_MODEL_PATH,
+    SEG_MODEL_PATH,
+    Vision6DPoseManager,
+)
 
 class VisionNode(Node):
     def __init__(self):
@@ -10,10 +14,21 @@ class VisionNode(Node):
         self.srv = self.create_service(GetTargetPose, '/get_target_pose', self.get_pose_cb)
         self.get_logger().info('[VISION] loading 6D ensemble vision manager')
 
+        self.declare_parameter('det_model_path', DET_MODEL_PATH)
+        self.declare_parameter('seg_model_path', SEG_MODEL_PATH)
+        self.declare_parameter('visualize', False)
+        self.declare_parameter('visualize_window', '6D Pose (Ensemble Mode)')
+
         self.vision = None
         self.init_error = None
         try:
-            self.vision = Vision6DPoseManager(logger=self.get_logger())
+            self.vision = Vision6DPoseManager(
+                logger=self.get_logger(),
+                det_model_path=self.get_parameter('det_model_path').value,
+                seg_model_path=self.get_parameter('seg_model_path').value,
+                visualize=bool(self.get_parameter('visualize').value),
+                visualize_window=self.get_parameter('visualize_window').value,
+            )
             self.get_logger().info('[VISION] vision_node started (6D ensemble based)')
         except Exception as e:
             self.init_error = str(e)

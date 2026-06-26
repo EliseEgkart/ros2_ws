@@ -438,7 +438,7 @@ ros2 launch all_in_one_package all_in_one_launch.py
 
 ros2 run robocup_navigator robocup_navigator --ros-args -p side_mode:=A
 
-ros2 launch amr_robot_launch amr_robot.launch.py
+ros2 launch amr_robot_launch amr_robot.launch.py vision_visualize:=true
 
 ros2 run sml_system_pkg mock_wb_node
 

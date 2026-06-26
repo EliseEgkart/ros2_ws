@@ -11,16 +11,27 @@ amr_robot_node는 생성자에서 wait_for_service로 의존 서비스들을 자
 """
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    vision_visualize_arg = DeclareLaunchArgument(
+        'vision_visualize',
+        default_value='false',
+        description='Show OpenCV visualization window for vision_node',
+    )
+
     vision_node = Node(
         package='vision_pkg',
         executable='vision_node',
         name='vision_node',
         output='screen',
         emulate_tty=True,
+        parameters=[{
+            'visualize': LaunchConfiguration('vision_visualize'),
+        }],
     )
 
     gripper_node = Node(
@@ -48,6 +59,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        vision_visualize_arg,
         vision_node,
         gripper_node,
         cargo_manager_node,

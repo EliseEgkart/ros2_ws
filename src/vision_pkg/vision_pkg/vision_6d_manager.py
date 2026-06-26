@@ -11,7 +11,7 @@ import pyrealsense2 as rs
 from ultralytics import YOLO
 
 
-WORKSPACE_DIR = "/home/st02/ros2_ws"
+WORKSPACE_DIR = os.environ.get("ROS2_WS", "/home/st02/ros2_ws")
 DET_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best.pt")
 SEG_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best_old.pt")
 
@@ -70,6 +70,8 @@ class Vision6DPoseManager:
         sample_sec=1.2,
         min_samples=5,
         match_distance_px=40.0,
+        visualize=False,
+        visualize_window="6D Pose (Ensemble Mode)",
     ):
         self.logger = logger
         self.det_model_path = det_model_path
@@ -77,6 +79,8 @@ class Vision6DPoseManager:
         self.sample_sec = float(sample_sec)
         self.min_samples = int(min_samples)
         self.match_distance_px = float(match_distance_px)
+        self.visualize = bool(visualize)
+        self.visualize_window = str(visualize_window)
 
         self._check_model_file(self.det_model_path)
         self._check_model_file(self.seg_model_path)
@@ -98,7 +102,8 @@ class Vision6DPoseManager:
 
         self._log_info(
             f"6D ensemble loaded: det={self.det_model_path}, seg={self.seg_model_path}, "
-            f"det_task={self.model_det.task}, seg_task={self.model_seg.task}"
+            f"det_task={self.model_det.task}, seg_task={self.model_seg.task}, "
+            f"visualize={self.visualize}"
         )
 
     def shutdown(self):
@@ -106,6 +111,11 @@ class Vision6DPoseManager:
             self.pipeline.stop()
         except Exception as exc:
             self._log_warn(f"RealSense pipeline stop failed: {exc}")
+        if self.visualize:
+            try:
+                cv2.destroyWindow(self.visualize_window)
+            except Exception:
+                pass
 
     def run_pipeline_by_id(self, target_id):
         try:
@@ -147,6 +157,7 @@ class Vision6DPoseManager:
 
                 all_z_values = []
                 frame_targets = []
+                detections_for_vis = []
 
                 for box in det_result.boxes:
                     cls_name = det_result.names[int(box.cls[0])]
@@ -157,14 +168,46 @@ class Vision6DPoseManager:
                     v = int((xyxy[1] + xyxy[3]) / 2)
 
                     z = self.get_valid_depth(depth_frame, u, v)
+                    yaw = 0.0
+                    is_target = self._target_matches(target_key, cls_key)
                     if z <= 0.0:
+                        detections_for_vis.append(
+                            {
+                                "u": u,
+                                "v": v,
+                                "z": z,
+                                "yaw": yaw,
+                                "class_name": str(cls_name),
+                                "is_target": is_target,
+                            }
+                        )
                         continue
 
                     all_z_values.append(z)
-                    if not self._target_matches(target_key, cls_key):
+                    if not is_target:
+                        detections_for_vis.append(
+                            {
+                                "u": u,
+                                "v": v,
+                                "z": z,
+                                "yaw": yaw,
+                                "class_name": str(cls_name),
+                                "is_target": False,
+                            }
+                        )
                         continue
 
                     yaw = self.find_yaw_from_segmentation(seg_result, u, v)
+                    detections_for_vis.append(
+                        {
+                            "u": u,
+                            "v": v,
+                            "z": z,
+                            "yaw": yaw,
+                            "class_name": str(cls_name),
+                            "is_target": True,
+                        }
+                    )
                     frame_targets.append(
                         {
                             "u": u,
@@ -175,9 +218,11 @@ class Vision6DPoseManager:
                         }
                     )
 
+                current_best = None
                 if frame_targets and all_z_values:
                     floor_z = max(all_z_values)
                     best = min(frame_targets, key=lambda item: item["z"])
+                    current_best = best
                     layer = int(round((floor_z - best["z"]) / 0.016)) + 1
                     x_m, y_m, z_m = rs.rs2_deproject_pixel_to_point(
                         self.intrinsics,
@@ -193,6 +238,14 @@ class Vision6DPoseManager:
                             float(layer),
                             best["detected_class"],
                         ]
+                    )
+
+                if self.visualize:
+                    self.show_visualization(
+                        det_result=det_result,
+                        detections=detections_for_vis,
+                        target_class=class_name,
+                        best=current_best,
                     )
 
                 time.sleep(0.01)
@@ -231,6 +284,56 @@ class Vision6DPoseManager:
             f"yaw={result.yaw_deg:.1f}deg, layer={result.layer}"
         )
         return result
+
+    def show_visualization(self, det_result, detections, target_class, best=None):
+        image = det_result.plot()
+        cv2.circle(image, (320, 240), 5, (0, 0, 255), -1)
+        cv2.putText(
+            image,
+            f"target: {target_class}",
+            (12, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        best_u = best["u"] if best is not None else None
+        best_v = best["v"] if best is not None else None
+
+        for det in detections:
+            u = det["u"]
+            v = det["v"]
+            color = (0, 255, 255) if det["is_target"] else (180, 180, 180)
+            radius = 7 if det["is_target"] else 4
+            if best_u == u and best_v == v:
+                color = (0, 0, 255)
+                radius = 9
+
+            cv2.circle(image, (u, v), radius, color, -1)
+            if det["z"] > 0.0:
+                label = (
+                    f"{det['class_name']} "
+                    f"Z:{det['z'] * 1000.0:.0f} "
+                    f"Yaw:{det['yaw']:.1f}"
+                )
+            else:
+                label = f"{det['class_name']} Z:invalid"
+
+            cv2.putText(
+                image,
+                label,
+                (max(0, u - 90), min(470, v + 24)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
+
+        cv2.imshow(self.visualize_window, image)
+        cv2.waitKey(1)
 
     def find_yaw_from_segmentation(self, seg_result, target_u, target_v):
         if seg_result.masks is None or seg_result.boxes is None:

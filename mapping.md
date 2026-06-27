@@ -42,7 +42,35 @@ ros2 run robocup_navigator waypoint_editor
 
 ---
 
-## 4. START GUIDE
+## 4. 포인트 테스트 주행
+
+웨이포인트 기반 테스트 주행은 아래 명령어로 실행한다.
+
+```sh
+ros2 run amr_navigator yaml_autonomous_waypoint_node
+```
+
+실행 후 터미널에 원하는 주행 모드를 입력한다.
+
+```sh
+all : 전체 웨이포인트 순서대로 주행
+1   : 현재 위치 -> sub_goal 1 -> goal 1 주행
+2   : 현재 위치 -> sub_goal 2 -> goal 2 주행
+q   : 종료
+```
+
+예시:
+
+```sh
+route> all
+route> 1
+route> 2
+route> q
+```
+
+---
+
+## 5. START GUIDE
 
 아래 명령어를 실행한다.
 

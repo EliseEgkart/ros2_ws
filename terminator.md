@@ -171,3 +171,4 @@ terminator -u -d -g /home/moonshot/ros2_ws/tools/terminator/terminator_robocup_8
 가장 흔한 실행 실수는 `-u` 없이 실행해서 이미 떠 있는 Terminator 인스턴스에 요청이 전달되는 경우다.
 
 각 pane이 잠깐 생겼다가 바로 닫히면 `tools/terminator/ros2_preset_prompt.sh` 안에서 실행되는 source 단계가 실패한 것이다. ROS setup 파일은 `set -u` 상태에서 내부 변수가 unbound 처리되어 종료될 수 있으므로, 이 래퍼 스크립트에서는 `set -u`를 사용하지 않는다.
+

@@ -11,8 +11,8 @@ waypoints:
       w: 0.0
   station_1_goal:
     position:
-      x: -0.486531
-      y: 1.986531
+      x: -0.473061
+      y: 1.737347
       z: 0.0
     orientation:
       x: 0.0
@@ -31,14 +31,14 @@ waypoints:
       w: 0.387252
   station_2_goal:
     position:
-      x: -0.493265
-      y: 2.814898
+      x: -0.473061
+      y: 2.720612
       z: 0.0
     orientation:
       x: 0.0
       y: 0.0
-      z: 0.999943
-      w: 0.010638
+      z: 1.0
+      w: 0.0
   station_3_sub_goal:
     position:
       x: 0.308163
@@ -61,24 +61,24 @@ waypoints:
       w: 0.717578
   station_4_sub_goal:
     position:
-      x: 1.230816
-      y: 2.424286
+      x: 1.203878
+      y: 2.363673
       z: 0.0
     orientation:
       x: 0.0
       y: 0.0
-      z: 0.707107
-      w: 0.707107
+      z: 0.693898
+      w: 0.720073
   station_4_goal:
     position:
       x: 1.224082
-      y: 2.781224
+      y: 2.787959
       z: 0.0
     orientation:
       x: 0.0
       y: 0.0
-      z: 0.710376
-      w: 0.703823
+      z: 0.713872
+      w: 0.700276
   station_5_sub_goal:
     position:
       x: 1.473265

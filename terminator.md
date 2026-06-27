@@ -77,6 +77,8 @@ chmod +x tools/terminator/*.sh
 ./tools/terminator/install_terminator_config.sh
 ```
 
+설치 스크립트는 현재 워크스페이스 경로를 자동으로 감지해서 Terminator 설정에 반영한다. 예를 들어 `st02` 컴퓨터에서 실행하면 `/home/st02/ros2_ws`가 설정에 들어가고, `moonshot` 컴퓨터에서 실행하면 `/home/moonshot/ros2_ws`가 들어간다.
+
 설치 후 실행한다.
 
 ```bash
@@ -87,24 +89,21 @@ terminator -u -l robocup_8pane
 
 ### 다른 경로에 설치한 경우
 
-현재 Terminator 설정 파일은 `/home/moonshot/ros2_ws/tools/terminator/ros2_preset_prompt.sh`를 직접 참조한다. 다른 컴퓨터의 사용자명이 다르거나 워크스페이스 경로가 다르면 아래 파일에서 경로를 새 컴퓨터에 맞게 바꾼다.
+워크스페이스가 `~/ros2_ws`가 아니어도 된다. 중요한 것은 해당 워크스페이스 안에서 설치 스크립트를 실행하는 것이다.
 
-```text
-tools/terminator/terminator_robocup_8pane.config
-```
-
-예를 들어 새 컴퓨터의 경로가 `/home/robot/ros2_ws`라면 아래처럼 치환한다.
+예를 들어 `/home/robot/demo_ws`에 설치했다면 아래처럼 실행한다.
 
 ```bash
-cd ~/ros2_ws
-sed -i 's#/home/moonshot/ros2_ws#/home/robot/ros2_ws#g' tools/terminator/terminator_robocup_8pane.config
+cd /home/robot/demo_ws
+chmod +x tools/terminator/*.sh
 ./tools/terminator/install_terminator_config.sh
+terminator -u -l robocup_8pane
 ```
 
-그 다음 실행한다.
+설치 후 `~/.config/terminator/config` 안의 command 경로가 현재 컴퓨터의 워크스페이스를 가리키는지 확인할 수 있다.
 
 ```bash
-terminator -u -l robocup_8pane
+grep ros2_preset_prompt ~/.config/terminator/config
 ```
 
 ## 창 배치와 사전 입력 명령
@@ -172,3 +171,17 @@ terminator -u -d -g /home/moonshot/ros2_ws/tools/terminator/terminator_robocup_8
 
 각 pane이 잠깐 생겼다가 바로 닫히면 `tools/terminator/ros2_preset_prompt.sh` 안에서 실행되는 source 단계가 실패한 것이다. ROS setup 파일은 `set -u` 상태에서 내부 변수가 unbound 처리되어 종료될 수 있으므로, 이 래퍼 스크립트에서는 `set -u`를 사용하지 않는다.
 
+다른 컴퓨터에서 설치했는데 한 칸만 뜨거나 각 pane이 바로 닫히면, 먼저 설치된 config가 현재 컴퓨터 경로를 보고 있는지 확인한다.
+
+```bash
+grep ros2_preset_prompt ~/.config/terminator/config
+```
+
+`st02` 컴퓨터라면 `/home/st02/ros2_ws/...`가 보여야 한다. `/home/moonshot/ros2_ws/...`가 보이면 예전 설정 파일이 설치된 것이므로 최신 파일을 받은 뒤 다시 설치한다.
+
+```bash
+cd ~/ros2_ws
+chmod +x tools/terminator/*.sh
+./tools/terminator/install_terminator_config.sh
+terminator -u -l robocup_8pane
+```

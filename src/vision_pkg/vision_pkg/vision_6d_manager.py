@@ -181,6 +181,32 @@ class Vision6DPoseManager:
                     u = int((xyxy[0] + xyxy[2]) / 2)
                     v = int((xyxy[1] + xyxy[3]) / 2)
 
+                    is_target = self._target_matches(target_key, cls_key)
+
+                    # ------------------------------------------------------------
+                    # [NEW] 화면 테두리에 걸친 객체 제거
+                    # ------------------------------------------------------------
+                    if self.is_border_cut_object(
+                        xyxy=xyxy,
+                        image_shape=image.shape,
+                        seg_result=seg_result,
+                        target_u=u,
+                        target_v=v,
+                        match_distance_px=self.match_distance_px,
+                        margin_px=12,
+                    ):
+                        detections_for_vis.append(
+                            {
+                                "u": u,
+                                "v": v,
+                                "z": 0.0,
+                                "yaw": 0.0,
+                                "class_name": f"{cls_name}_edge_cut",
+                                "is_target": False,
+                            }
+                        )
+                        continue
+
                     z = self.get_valid_depth(depth_frame, u, v)
                     yaw = 0.0
                     is_target = self._target_matches(target_key, cls_key)
@@ -397,6 +423,95 @@ class Vision6DPoseManager:
         if yaw < -90.0:
             yaw += 180.0
         return float(yaw)
+
+    @staticmethod
+    def is_border_cut_object(
+        xyxy,
+        image_shape,
+        seg_result=None,
+        target_u=None,
+        target_v=None,
+        match_distance_px=40.0,
+        margin_px=12,
+    ):
+        """
+        화면 테두리에 걸쳐 잘린 객체인지 판단.
+
+        판단 기준:
+        1. YOLO detection bbox가 이미지 테두리에 margin_px 이내로 닿으면 True
+        2. segmentation mask polygon이 이미지 테두리에 margin_px 이내로 닿으면 True
+
+        Args:
+            xyxy: YOLO bbox 좌표 [x1, y1, x2, y2]
+            image_shape: image.shape, 보통 (H, W, C)
+            seg_result: YOLO segmentation 결과. 없으면 bbox 기준만 사용
+            target_u, target_v: detection bbox 중심 픽셀
+            match_distance_px: detection bbox와 segmentation bbox 매칭 거리
+            margin_px: 테두리로 판단할 픽셀 여유값
+
+        Returns:
+            True  -> 화면 테두리에 걸친 잘린 객체, 비활성화 권장
+            False -> 정상 객체
+        """
+        h, w = image_shape[:2]
+
+        x1, y1, x2, y2 = map(float, xyxy)
+
+        # ------------------------------------------------------------
+        # 1) Detection bbox가 화면 테두리에 닿는지 확인
+        # ------------------------------------------------------------
+        bbox_touches_border = (
+            x1 <= margin_px or
+            y1 <= margin_px or
+            x2 >= (w - 1 - margin_px) or
+            y2 >= (h - 1 - margin_px)
+        )
+
+        if bbox_touches_border:
+            return True
+
+        # ------------------------------------------------------------
+        # 2) Segmentation mask가 있으면 mask polygon도 확인
+        #    bbox는 안 닿았는데 mask만 경계에 걸치는 경우 방어
+        # ------------------------------------------------------------
+        if seg_result is None:
+            return False
+
+        if seg_result.masks is None or seg_result.boxes is None:
+            return False
+
+        if target_u is None or target_v is None:
+            return False
+
+        min_dist = float("inf")
+        best_mask_pts = None
+
+        for idx, seg_box in enumerate(seg_result.boxes):
+            seg_xyxy = seg_box.xyxy[0].cpu().numpy()
+            seg_u = int((seg_xyxy[0] + seg_xyxy[2]) / 2)
+            seg_v = int((seg_xyxy[1] + seg_xyxy[3]) / 2)
+
+            dist = ((target_u - seg_u) ** 2 + (target_v - seg_v) ** 2) ** 0.5
+
+            if dist < match_distance_px and dist < min_dist:
+                min_dist = dist
+                if len(seg_result.masks.xy) > idx:
+                    best_mask_pts = np.asarray(seg_result.masks.xy[idx], dtype=np.float32)
+
+        if best_mask_pts is None or len(best_mask_pts) < 3:
+            return False
+
+        xs = best_mask_pts[:, 0]
+        ys = best_mask_pts[:, 1]
+
+        mask_touches_border = (
+            np.any(xs <= margin_px) or
+            np.any(ys <= margin_px) or
+            np.any(xs >= (w - 1 - margin_px)) or
+            np.any(ys >= (h - 1 - margin_px))
+        )
+
+        return bool(mask_touches_border)
 
     @staticmethod
     def get_valid_depth(depth_frame, u, v, search_radius=10):

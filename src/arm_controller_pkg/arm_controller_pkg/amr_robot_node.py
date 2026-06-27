@@ -13,7 +13,14 @@ import threading
 
 ROBOT_IP = "10.0.2.8"
 
-HOME_JOINT_DEG   = np.array([-90.0,   13.70,  69.94, 0.0, 96.36, 0.0])
+# np.array([-90.0, 13.82, 83.37, 0.0, 82.82, 0.0]), z=280.28
+# np.array([-90.0, 13.43, 80.49, 0.0, 86.09, 0.0]), z=301.28
+# np.array([-90.0, 13.28,  75.45, 0.0, 91.27, 0.0]), z=331.28 main
+# np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]), z=361.28
+# np.array([-90.0, 14.26, 66.11, 0.0, 99.62, 0.0]),  z=381.28
+
+
+HOME_JOINT_DEG   = np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0])#글로벌 z=361.28
 MOVING_JOINT_DEG = np.array([-90.0, -26.02, 140.8, 0.0, 65.22, 0.0])
 
 # 슬롯별 웨이포인트 (joint, degree)
@@ -22,14 +29,14 @@ MOVING_JOINT_DEG = np.array([-90.0, -26.02, 140.8, 0.0, 65.22, 0.0])
 # load/unload가 동일한 단일 테이블을 공유한다 (slot 4도 load 값으로 통일).
 SLOT_WAYPOINTS = {
     1: [
-        np.array([-90.0,   13.70,  69.94, 0.0, 96.36, 0.0]),
+        np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]),
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
         np.array([-15.0, -36.42, 117.55, 0.0, 98.86, 0.0]),
         np.array([53.60, 23.71, 15.87, 3.85, 130.79, 0.0]),
         np.array([72.73, 14.6, 40.31, -1.80, 129.55, -18.36]),
     ],
     2: [
-        np.array([-90.0,   13.70,  69.94, 0.0, 96.36, 0.0]),
+        np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]),
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
         np.array([-160.24, -33.11, 115.37, 0.0, 97.76, 0.0]),
         np.array([-220.0, -11.96, 57.40, 0.0, 100.40, 0.0]),
@@ -37,7 +44,7 @@ SLOT_WAYPOINTS = {
         np.array([-266.73, 12.15, 40.53, -1.88, 120.34, 2.49]),
     ],
     3: [
-        np.array([-90.0,   13.70,  69.94, 0.0, 96.36, 0.0]),
+        np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]),
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
         np.array([-160.24, -33.11, 115.37, 0.0, 97.76, 0.0]),
         np.array([-220.0, -11.96, 57.40, 0.0, 100.40, 0.0]),
@@ -45,7 +52,7 @@ SLOT_WAYPOINTS = {
         np.array([-254.05, 14.83, 37.52, -3.64, 121.15, 14.16]),
     ],
     4: [
-        np.array([-90.0,   13.70,  69.94, 0.0, 96.36, 0.0]),
+        np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]),
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
         np.array([-160.24, -33.11, 115.37, 0.0, 97.76, 0.0]),
         np.array([-220.0, -11.96, 57.40, 0.0, 100.40, 0.0]),
@@ -53,21 +60,21 @@ SLOT_WAYPOINTS = {
         np.array([-243.17, 21.99, 28.30, -6.83, 123.86, 23.87]),
     ],
     5: [
-        np.array([-90.0,   13.70,  69.94, 0.0, 96.36, 0.0]),
+        np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]),
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
         np.array([-160.24, -33.11, 115.37, 0.0, 97.76, 0.0]),
         np.array([-220.0, -11.96, 57.40, 0.0, 100.40, 0.0]),
         np.array([-237.90, 5.0, 48.42, 0.0, 126.56, 32.10]),
     ],
     6: [
-        np.array([-90.0,   13.70,  69.94, 0.0, 96.36, 0.0]),
+        np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]),
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
         np.array([-160.24, -33.11, 115.37, 0.0, 97.76, 0.0]),
         np.array([-220.0, -11.96, 57.40, 0.0, 100.40, 0.0]),
         np.array([-251.34, -0.64, 54.28, 0.0, 126.33, 18.67]),
     ],
     7: [
-        np.array([-90.0,   13.70,  69.94, 0.0, 96.36, 0.0]),
+        np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]),
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
         np.array([-160.24, -33.11, 115.37, 0.0, 97.76, 0.0]),
         np.array([-220.0, -11.96, 57.40, 0.0, 100.40, 0.0]),
@@ -272,6 +279,7 @@ class AmrRobotNode(Node):
             self.rc = rb.ResponseCollector()
             self.robot.set_operation_mode(self.rc, rb.OperationMode.Real)
             self.robot.set_speed_bar(self.rc, 1.0)
+            self.robot.set_speed_multiplier(self.rc, 1.0)
             self.robot_ready = True
             self.get_logger().info('[AMR] robot connected')
         except Exception as e:
@@ -305,6 +313,10 @@ class AmrRobotNode(Node):
 
         self.get_logger().info('[AMR] amr_robot_node started')
 
+        if self.robot_ready:
+            t = threading.Thread(target=self._startup_move, daemon=True)
+            t.start()
+
     # --- 상태 확인 헬퍼 ---
 
     def is_robot_ready(self):
@@ -324,6 +336,18 @@ class AmrRobotNode(Node):
             return bool(np.all(np.abs(cur - HOME_JOINT_DEG) <= tol_deg))
         except Exception as e:
             self.get_logger().warn(f'[AMR] is_at_home read failed: {e}')
+            return False
+
+    def is_at_moving_pose(self, tol_deg=1.0):
+        """현재 조인트가 MOVING_JOINT_DEG와 일치하는지 확인한다."""
+        if self.robot_data is None:
+            return False
+        try:
+            data = self.robot_data.request_data(1.0)
+            cur = np.array([data.sdata.jnt_ang[i] for i in range(6)], dtype=float)
+            return bool(np.all(np.abs(cur - MOVING_JOINT_DEG) <= tol_deg))
+        except Exception as e:
+            self.get_logger().warn(f'[AMR] is_at_moving_pose read failed: {e}')
             return False
 
     # --- 서비스 호출 헬퍼 ---
@@ -477,6 +501,23 @@ class AmrRobotNode(Node):
             self.get_logger().info(f'[AMR] command done {label}')
         return ok
 
+    def _startup_move(self):
+        """노드 시작 직후 MOVING_JOINT_DEG 자세로 이동한다.
+        이미 그 자세면 무시하고, 아니면 HOME을 경유해 이동한다."""
+        with self._busy_lock:
+            if self._busy:
+                return
+            self._busy = True
+        try:
+            if self.is_at_moving_pose():
+                self.get_logger().info('[AMR] already at moving pose, skip startup move')
+                return
+            self.go_home()
+            self.go_moving_pose()
+        finally:
+            with self._busy_lock:
+                self._busy = False
+
     def go_home(self):
         # 이미 HOME에 있으면 제자리 move_j를 보내지 않는다.
         # (이동량 0인 move_j는 wait_for_move_finished가 완료 신호를 제대로 못 받아
@@ -524,7 +565,7 @@ class AmrRobotNode(Node):
         self.get_logger().info(f'[AMR] slot={slot} reached')
         return True
 
-    def return_from_slot(self, slot):
+    def return_from_slot(self, slot, skip_last=False):
         waypoints = SLOT_WAYPOINTS.get(slot)
         if waypoints is None:
             self.get_logger().error(f'[AMR] no waypoints for slot={slot}')
@@ -533,12 +574,18 @@ class AmrRobotNode(Node):
         # 역방향 첫 번째 waypoint는 방금 도착했던 슬롯 최종 자세라서 스킵한다.
         return_waypoints = list(reversed(waypoints))[1:]
 
+        # skip_last=True 이면 마지막 HOME_JOINT_DEG 경유를 생략한다.
+        # (호출부에서 곧장 MOVING_JOINT_DEG 로 갈 때 사용)
+        if skip_last:
+            return_waypoints = return_waypoints[:-1]
+
         for idx, wp in enumerate(return_waypoints, start=2):
             if not self.move_j_checked(wp, label=f'return_from_slot({slot}) wp{idx}'):
                 return False
 
         self.get_logger().info(f'[AMR] returned from slot={slot}')
-        self._at_home = True
+        if not skip_last:
+            self._at_home = True
         return True
 
     def product_delivery_z(self, object_id):
@@ -882,19 +929,28 @@ class AmrRobotNode(Node):
 
     def sequence_load_multi(self, object_ids):
         results = []
-        for object_id in object_ids:
-            result = self.sequence_load(object_id)
+        last_idx = len(object_ids) - 1
+        for idx, object_id in enumerate(object_ids):
+            is_last = (idx == last_idx)
+            result = self.sequence_load(object_id, is_last=is_last)
             results.append(result)
             if not result['success']:
                 self.get_logger().error(f'[AMR] load failed at object_id={object_id}, stopping')
                 break
-        # 모든 적재(또는 중단) 후 HOME을 거쳐 이동 포즈로 전환한다.
-        # (각 sequence_load 내부에서 이미 HOME 복귀가 완료되므로 go_home()은 플래그로 즉시 스킵됨)
-        self.go_home()
+
+        # 마지막 물체까지 정상 처리된 경우:
+        #   마지막 sequence_load 가 HOME_JOINT_DEG 를 생략하고 복귀했으므로
+        #   곧장 이동 포즈로 보낸다 (UNLOAD 와 동일한 패턴).
+        # 중간에 실패해 break 한 경우엔 위치가 불확실하므로 안전하게 HOME 을 경유한다.
+        all_ok = bool(results) and all(r['success'] for r in results)
+        if all_ok:
+            self.get_logger().info('[AMR] last load done: skip HOME, go straight to moving pose')
+        else:
+            self.go_home()
         self.go_moving_pose()
         return results
 
-    def sequence_load(self, object_id):
+    def sequence_load(self, object_id, is_last=False):
         if not self.is_robot_ready():
             return {
                 'success': False,
@@ -1102,7 +1158,8 @@ class AmrRobotNode(Node):
             }
 
         # 10. 웨이포인트 역순으로 홈 복귀
-        if not self.return_from_slot(slot):
+        #     마지막 물체면 HOME_JOINT_DEG 경유를 생략하고 호출부에서 곧장 이동 포즈로 간다.
+        if not self.return_from_slot(slot, skip_last=is_last):
             return {
                 'success': False,
                 'slot': slot,

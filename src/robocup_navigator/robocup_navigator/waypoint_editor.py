@@ -951,14 +951,14 @@ def parse_args(argv: Optional[List[str]] = None):
     )
     parser.add_argument(
         '--map',
-        default='/home/moonshot/ros2_ws/src/amr/map/demofinalA.yaml',
+        default='/home/moonshot/ros2_ws/src/amr/map/robocup_map.yaml',
         help='Path to ROS map YAML.',
     )
     parser.add_argument(
         '--waypoints',
         default=(
             '/home/moonshot/ros2_ws/src/robocup_navigator/params/'
-            'demofinalA.yaml'
+            'robocup_waypoint.yaml'
         ),
         help='Path to navigator waypoint YAML.',
     )

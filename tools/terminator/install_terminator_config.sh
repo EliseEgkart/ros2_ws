@@ -18,4 +18,4 @@ cp "$SOURCE_CONFIG" "$TARGET_CONFIG"
 echo "[OK] installed: $TARGET_CONFIG"
 echo
 echo "Run:"
-echo "  terminator -l robocup_8pane"
+echo "  terminator -u -l robocup_8pane"

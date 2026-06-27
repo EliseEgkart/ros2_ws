@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -u
 
 WORKSPACE="${ROS2_WS:-$HOME/ros2_ws}"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"

@@ -25,12 +25,86 @@ cd ~/ros2_ws
 
 ## 기본 Terminator 레이아웃으로 설치
 
-`terminator -l robocup_8pane`만으로 실행하고 싶다면 설치 스크립트를 실행한다. 기존 `~/.config/terminator/config`는 자동으로 백업된다.
+설치 후에는 `terminator -u -l robocup_8pane`로 실행한다. `-u`는 이미 떠 있는 Terminator 인스턴스를 재사용하지 않고 새 창으로 레이아웃을 열게 한다.
 
 ```bash
 cd ~/ros2_ws
 ./tools/terminator/install_terminator_config.sh
-terminator -l robocup_8pane
+terminator -u -l robocup_8pane
+```
+
+## 다른 컴퓨터에 동일하게 설치
+
+전제 조건은 다음과 같다.
+
+```text
+Ubuntu 환경
+Terminator 설치됨
+ROS2 Humble 설치됨: /opt/ros/humble/setup.bash
+워크스페이스 경로: ~/ros2_ws
+워크스페이스 빌드 완료: ~/ros2_ws/install/setup.bash 존재
+```
+
+Terminator가 설치되어 있지 않으면 먼저 설치한다.
+
+```bash
+sudo apt update
+sudo apt install terminator
+```
+
+새 컴퓨터에 이 저장소 또는 `ros2_ws`를 같은 위치로 복사한다.
+
+```bash
+cd ~
+# 예시: 저장소를 git으로 받는 경우
+git clone <REPOSITORY_URL> ros2_ws
+```
+
+워크스페이스를 빌드한다.
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build
+source install/setup.bash
+```
+
+Terminator 설정 파일과 실행 스크립트 권한을 준비한다.
+
+```bash
+cd ~/ros2_ws
+chmod +x tools/terminator/*.sh
+./tools/terminator/install_terminator_config.sh
+```
+
+설치 후 실행한다.
+
+```bash
+terminator -u -l robocup_8pane
+```
+
+정상 동작하면 8분할 창이 열리고 각 창에 명령어가 입력된 상태로 대기한다. 실제 ROS 노드는 Enter를 누를 때 실행된다.
+
+### 다른 경로에 설치한 경우
+
+현재 Terminator 설정 파일은 `/home/moonshot/ros2_ws/tools/terminator/ros2_preset_prompt.sh`를 직접 참조한다. 다른 컴퓨터의 사용자명이 다르거나 워크스페이스 경로가 다르면 아래 파일에서 경로를 새 컴퓨터에 맞게 바꾼다.
+
+```text
+tools/terminator/terminator_robocup_8pane.config
+```
+
+예를 들어 새 컴퓨터의 경로가 `/home/robot/ros2_ws`라면 아래처럼 치환한다.
+
+```bash
+cd ~/ros2_ws
+sed -i 's#/home/moonshot/ros2_ws#/home/robot/ros2_ws#g' tools/terminator/terminator_robocup_8pane.config
+./tools/terminator/install_terminator_config.sh
+```
+
+그 다음 실행한다.
+
+```bash
+terminator -u -l robocup_8pane
 ```
 
 ## 창 배치와 사전 입력 명령
@@ -78,3 +152,22 @@ ROS2_WS=/home/moonshot/ros2_ws ROS_DISTRO=humble ./tools/terminator/open_robocup
 ```
 
 8번 창은 디버깅용으로 쓰며, 기본값은 `ros2 topic list`다.
+
+## 문제 해결
+
+아래 경고는 기존 Terminator 창이 숨김 단축키를 이미 잡고 있다는 뜻이다. 레이아웃 실패 원인은 아니다.
+
+```text
+Binding '<Control><Alt>a' failed!
+Unable to bind hide_window key, another instance/window has it.
+```
+
+이 경고가 보여도 8분할이 열리면 정상이다. 그래도 한 칸만 열리면 디버그 로그를 확인한다.
+
+```bash
+terminator -u -d -g /home/moonshot/ros2_ws/tools/terminator/terminator_robocup_8pane.config -l robocup_8pane
+```
+
+가장 흔한 실행 실수는 `-u` 없이 실행해서 이미 떠 있는 Terminator 인스턴스에 요청이 전달되는 경우다.
+
+각 pane이 잠깐 생겼다가 바로 닫히면 `tools/terminator/ros2_preset_prompt.sh` 안에서 실행되는 source 단계가 실패한 것이다. ROS setup 파일은 `set -u` 상태에서 내부 변수가 unbound 처리되어 종료될 수 있으므로, 이 래퍼 스크립트에서는 `set -u`를 사용하지 않는다.

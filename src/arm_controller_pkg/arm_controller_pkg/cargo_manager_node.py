@@ -16,6 +16,7 @@ MATERIAL_NAMES = {
 
 PRODUCT_SLOT = 1
 MATERIAL_SLOTS = [2, 3, 4, 5, 6, 7]
+ASSEMBLY_SLOT = 8  # 조립 완료된 완성품이 놓이는 슬롯 (FIND_EMPTY 검색 대상 아님)
 
 
 class CargoManagerNode(Node):
@@ -23,7 +24,7 @@ class CargoManagerNode(Node):
         super().__init__('cargo_manager_node')
         self.srv = self.create_service(Cargo, '/cargo', self.cargo_cb)
 
-        self.slot_state = {slot: None for slot in [PRODUCT_SLOT] + MATERIAL_SLOTS}
+        self.slot_state = {slot: None for slot in [PRODUCT_SLOT] + MATERIAL_SLOTS + [ASSEMBLY_SLOT]}
 
         self.get_logger().info('[CARGO] cargo_manager_node started')
         self.get_logger().info(f'[CARGO] slots: {list(self.slot_state.keys())}')

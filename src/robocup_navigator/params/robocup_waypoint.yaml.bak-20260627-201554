@@ -161,14 +161,14 @@ waypoints:
       w: 0.999804
   station_0_goal:
     position:
-      x: -0.82
-      y: -0.38
+      x: -0.022506
+      y: -0.306732
       z: 0.0
     orientation:
       x: 0.0
       y: 0.0
-      z: 0.427823
-      w: 0.903862
+      z: 0.009457
+      w: 0.999955
 sequence:
 - station_1_sub_goal
 - station_1_goal

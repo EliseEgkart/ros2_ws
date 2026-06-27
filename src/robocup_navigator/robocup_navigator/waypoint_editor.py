@@ -17,6 +17,11 @@ from PIL import Image, ImageOps, ImageTk
 
 
 STATION_WAYPOINT_RE = re.compile(r'^station_(\d+)_(sub_)?goal$')
+DEFAULT_MAP_PATH = Path.home() / 'ros2_ws/src/amr/map/robocup_map.yaml'
+DEFAULT_WAYPOINTS_PATH = (
+    Path.home()
+    / 'ros2_ws/src/robocup_navigator/params/robocup_waypoint.yaml'
+)
 
 
 @dataclass
@@ -152,6 +157,8 @@ class WaypointEditor:
         self.dirty = False
         self.photo = None
         self.map_image_item = None
+        self.measure_start_map: Optional[Tuple[float, float]] = None
+        self.measure_end_map: Optional[Tuple[float, float]] = None
 
         self.name_var = tk.StringVar()
         self.station_id_var = tk.StringVar(value='1')
@@ -162,6 +169,10 @@ class WaypointEditor:
         self.frame_id_var = tk.StringVar(value=str(self.data['frame_id']))
         self.post_process_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar()
+        self.show_grid_var = tk.BooleanVar(value=True)
+        self.snap_grid_var = tk.BooleanVar(value=False)
+        self.grid_spacing_var = tk.StringVar(value='0.50')
+        self.mode_var = tk.StringVar(value='edit')
 
         self.root.title('Robocup Waypoint Editor')
         self._build_ui()
@@ -292,10 +303,68 @@ class WaypointEditor:
             command=self.reload,
         ).grid(row=2, column=1, sticky=tk.EW, padx=(3, 0), pady=2)
 
+        tools = ttk.LabelFrame(sidebar, text='Tools', padding=8)
+        tools.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(
+            tools,
+            text='Mode',
+        ).grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.mode_combo = ttk.Combobox(
+            tools,
+            textvariable=self.mode_var,
+            values=('edit', 'measure', 'drag'),
+            state='readonly',
+            width=10,
+        )
+        self.mode_combo.grid(row=0, column=1, sticky=tk.EW, pady=2)
+        ttk.Label(
+            tools,
+            text='Grid m',
+        ).grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.grid_spacing_combo = ttk.Combobox(
+            tools,
+            textvariable=self.grid_spacing_var,
+            values=('0.05', '0.10', '0.25', '0.50', '1.00'),
+            width=10,
+        )
+        self.grid_spacing_combo.grid(row=1, column=1, sticky=tk.EW, pady=2)
+        ttk.Checkbutton(
+            tools,
+            text='Show grid',
+            variable=self.show_grid_var,
+            command=self._draw_overlays,
+        ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=2)
+        ttk.Checkbutton(
+            tools,
+            text='Snap to grid',
+            variable=self.snap_grid_var,
+        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=2)
+
+        tool_buttons = ttk.Frame(tools)
+        tool_buttons.grid(row=4, column=0, columnspan=2, sticky=tk.EW,
+                          pady=(6, 0))
+        tool_buttons.columnconfigure(0, weight=1)
+        tool_buttons.columnconfigure(1, weight=1)
+        ttk.Button(
+            tool_buttons,
+            text='Clear Measure',
+            command=self.clear_measurement,
+        ).grid(row=0, column=0, sticky=tk.EW, padx=(0, 3))
+        ttk.Button(
+            tool_buttons,
+            text='Center',
+            command=self.center_selected,
+        ).grid(row=0, column=1, sticky=tk.EW, padx=(3, 0))
+        tools.columnconfigure(1, weight=1)
+
         help_text = (
             'Left click: place selected waypoint\n'
             'Left drag: set heading\n'
             'Right click: select nearest waypoint\n'
+            'Measure mode: drag distance ruler\n'
+            'Drag mode: left drag pans map\n'
+            'Wheel: zoom, middle drag: pan\n'
+            'Alt+arrows: nudge, Alt+Q/E: rotate\n'
             'Ctrl+S: save, Del: delete'
         )
         ttk.Label(sidebar, text=help_text, justify=tk.LEFT).pack(
@@ -366,9 +435,34 @@ class WaypointEditor:
         self.canvas.bind('<B1-Motion>', self._on_left_drag)
         self.canvas.bind('<ButtonRelease-1>', self._on_left_release)
         self.canvas.bind('<ButtonPress-3>', self._on_right_press)
+        self.canvas.bind('<ButtonPress-2>', self._on_middle_press)
+        self.canvas.bind('<B2-Motion>', self._on_middle_drag)
+        self.canvas.bind('<MouseWheel>', self._on_mouse_wheel)
+        self.canvas.bind('<Button-4>', self._on_mouse_wheel)
+        self.canvas.bind('<Button-5>', self._on_mouse_wheel)
         self.canvas.bind('<Motion>', self._on_motion)
+        self.mode_combo.bind('<<ComboboxSelected>>', self._on_mode_changed)
+        self.grid_spacing_combo.bind(
+            '<<ComboboxSelected>>',
+            lambda _event: self._draw_overlays(),
+        )
         self.root.bind('<Control-s>', lambda _event: self.save())
         self.root.bind('<Delete>', lambda _event: self.delete_selected())
+        self.root.bind(
+            '<Alt-Left>',
+            lambda _event: self._nudge_selected(-1, 0),
+        )
+        self.root.bind(
+            '<Alt-Right>',
+            lambda _event: self._nudge_selected(1, 0),
+        )
+        self.root.bind('<Alt-Up>', lambda _event: self._nudge_selected(0, 1))
+        self.root.bind(
+            '<Alt-Down>',
+            lambda _event: self._nudge_selected(0, -1),
+        )
+        self.root.bind('<Alt-q>', lambda _event: self._rotate_selected(5.0))
+        self.root.bind('<Alt-e>', lambda _event: self._rotate_selected(-5.0))
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
 
     def _refresh_image(self):
@@ -420,10 +514,106 @@ class WaypointEditor:
         return names
 
     def _draw_overlays(self):
+        self.canvas.delete('grid')
         self.canvas.delete('overlay')
+        self.canvas.delete('measure')
+        self._draw_grid()
         self._draw_sequence()
         for name in self._ordered_waypoint_names():
             self._draw_waypoint(name)
+        self._draw_measurement()
+
+    def _draw_grid(self):
+        if not self.show_grid_var.get():
+            return
+
+        spacing = self._grid_spacing()
+        if spacing <= 0.0:
+            return
+
+        min_x, min_y, max_x, max_y = self._map_bounds()
+        start_x = math.floor(min_x / spacing) * spacing
+        start_y = math.floor(min_y / spacing) * spacing
+        major_every = max(1, int(round(1.0 / spacing)))
+
+        index = 0
+        x = start_x
+        while x <= max_x + spacing:
+            major = index % major_every == 0
+            color = '#3f5f6f' if major else '#2d3f48'
+            width = 1 if major else 1
+            x1, y1 = self.map_to_canvas(x, min_y)
+            x2, y2 = self.map_to_canvas(x, max_y)
+            self.canvas.create_line(
+                x1,
+                y1,
+                x2,
+                y2,
+                fill=color,
+                width=width,
+                tags=('grid',),
+            )
+            if major:
+                lx, ly = self.map_to_canvas(x, min_y)
+                self.canvas.create_text(
+                    lx + 2,
+                    ly - 2,
+                    text=f'{x:.1f}',
+                    anchor=tk.SW,
+                    fill='#24424f',
+                    font=('TkDefaultFont', 8),
+                    tags=('grid',),
+                )
+            x += spacing
+            index += 1
+
+        index = 0
+        y = start_y
+        while y <= max_y + spacing:
+            major = index % major_every == 0
+            color = '#3f5f6f' if major else '#2d3f48'
+            x1, y1 = self.map_to_canvas(min_x, y)
+            x2, y2 = self.map_to_canvas(max_x, y)
+            self.canvas.create_line(
+                x1,
+                y1,
+                x2,
+                y2,
+                fill=color,
+                tags=('grid',),
+            )
+            if major:
+                lx, ly = self.map_to_canvas(min_x, y)
+                self.canvas.create_text(
+                    lx + 2,
+                    ly - 2,
+                    text=f'{y:.1f}',
+                    anchor=tk.SW,
+                    fill='#24424f',
+                    font=('TkDefaultFont', 8),
+                    tags=('grid',),
+                )
+            y += spacing
+            index += 1
+
+    def _map_bounds(self) -> Tuple[float, float, float, float]:
+        corners = (
+            self.pixel_to_map(0.0, 0.0),
+            self.pixel_to_map(float(self.map_info.width), 0.0),
+            self.pixel_to_map(float(self.map_info.width),
+                              float(self.map_info.height)),
+            self.pixel_to_map(0.0, float(self.map_info.height)),
+        )
+        xs = [point[0] for point in corners]
+        ys = [point[1] for point in corners]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _grid_spacing(self) -> float:
+        try:
+            spacing = float(self.grid_spacing_var.get())
+        except ValueError:
+            spacing = 0.5
+        return max(0.01, spacing)
 
     def _draw_sequence(self):
         points = []
@@ -490,6 +680,67 @@ class WaypointEditor:
             font=('TkDefaultFont', 9, 'bold' if selected else 'normal'),
             tags=('overlay',),
         )
+
+    def _draw_measurement(self):
+        if not self.measure_start_map or not self.measure_end_map:
+            return
+
+        start_x, start_y = self.measure_start_map
+        end_x, end_y = self.measure_end_map
+        x1, y1 = self.map_to_canvas(start_x, start_y)
+        x2, y2 = self.map_to_canvas(end_x, end_y)
+        dx = end_x - start_x
+        dy = end_y - start_y
+        distance = math.hypot(dx, dy)
+        angle = normalize_degrees(math.degrees(math.atan2(dy, dx)))
+        label = (
+            f'{distance:.3f} m  dx={dx:.3f}  dy={dy:.3f}  yaw={angle:.1f} deg'
+        )
+
+        self.canvas.create_line(
+            x1,
+            y1,
+            x2,
+            y2,
+            fill='#d00000',
+            width=3,
+            tags=('measure',),
+        )
+        for cx, cy in ((x1, y1), (x2, y2)):
+            self.canvas.create_oval(
+                cx - 5,
+                cy - 5,
+                cx + 5,
+                cy + 5,
+                fill='#ffffff',
+                outline='#d00000',
+                width=2,
+                tags=('measure',),
+            )
+
+        mid_x = (x1 + x2) / 2.0
+        mid_y = (y1 + y2) / 2.0
+        text_id = self.canvas.create_text(
+            mid_x + 10,
+            mid_y - 10,
+            text=label,
+            anchor=tk.SW,
+            fill='#d00000',
+            font=('TkDefaultFont', 10, 'bold'),
+            tags=('measure',),
+        )
+        bbox = self.canvas.bbox(text_id)
+        if bbox:
+            background = self.canvas.create_rectangle(
+                bbox[0] - 3,
+                bbox[1] - 2,
+                bbox[2] + 3,
+                bbox[3] + 2,
+                fill='#fff7d6',
+                outline='#d00000',
+                tags=('measure',),
+            )
+            self.canvas.tag_lower(background, text_id)
 
     def map_to_canvas(self, x: float, y: float) -> Tuple[float, float]:
         pixel_x, pixel_y = self.map_to_pixel(x, y)
@@ -737,10 +988,20 @@ class WaypointEditor:
         self._set_status(f'Deleted {name}.')
 
     def _on_left_press(self, event):
+        mode = self.mode_var.get()
+        if mode == 'drag':
+            self.canvas.scan_mark(event.x, event.y)
+            return
+        if mode == 'measure':
+            self.measure_start_map = self._event_to_map(event)
+            self.measure_end_map = self.measure_start_map
+            self._draw_overlays()
+            return
+
         name = self._ensure_selected_for_canvas()
         if not name:
             return
-        x, y = self._event_to_map(event)
+        x, y = self._event_to_map(event, snap=True)
         _old_x, _old_y, yaw = waypoint_xy_yaw(self.waypoints[name])
         self.waypoints[name] = waypoint_pose(x, y, yaw)
         self.drag_start_map = (x, y)
@@ -749,6 +1010,18 @@ class WaypointEditor:
         self._draw_overlays()
 
     def _on_left_drag(self, event):
+        mode = self.mode_var.get()
+        if mode == 'drag':
+            self.canvas.scan_dragto(event.x, event.y, gain=1)
+            return
+        if mode == 'measure':
+            if not self.measure_start_map:
+                return
+            self.measure_end_map = self._event_to_map(event)
+            self._draw_overlays()
+            self._set_measure_status()
+            return
+
         name = self.selected_name
         if not name or not self.drag_start_map:
             return
@@ -762,7 +1035,16 @@ class WaypointEditor:
         self.mark_dirty()
         self._draw_overlays()
 
-    def _on_left_release(self, _event):
+    def _on_left_release(self, event):
+        mode = self.mode_var.get()
+        if mode == 'drag':
+            return
+        if mode == 'measure':
+            if self.measure_start_map:
+                self.measure_end_map = self._event_to_map(event)
+                self._draw_overlays()
+                self._set_measure_status()
+            return
         self.drag_start_map = None
 
     def _on_right_press(self, event):
@@ -773,9 +1055,38 @@ class WaypointEditor:
 
     def _on_motion(self, event):
         x, y = self._event_to_map(event)
-        self._set_status(
-            f'map x={x:.3f}, y={y:.3f} | zoom={self.zoom:.2f}x'
-        )
+        if self.snap_grid_var.get():
+            sx, sy = self._snap_to_grid(x, y)
+            position = (
+                f'map x={x:.3f}, y={y:.3f} | '
+                f'snap x={sx:.3f}, y={sy:.3f}'
+            )
+        else:
+            position = f'map x={x:.3f}, y={y:.3f}'
+        mode = self.mode_var.get()
+        self._set_status(f'{position} | mode={mode} | zoom={self.zoom:.2f}x')
+
+    def _on_middle_press(self, event):
+        self.canvas.scan_mark(event.x, event.y)
+
+    def _on_middle_drag(self, event):
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def _on_mouse_wheel(self, event):
+        if getattr(event, 'num', None) == 5 or getattr(event, 'delta', 0) < 0:
+            factor = 1.0 / 1.2
+        else:
+            factor = 1.2
+        self._zoom_at(event.x, event.y, self.zoom * factor)
+
+    def _on_mode_changed(self, _event=None):
+        mode = self.mode_var.get()
+        if mode == 'measure':
+            self._set_status('Measure mode: left drag between two map points.')
+        elif mode == 'drag':
+            self._set_status('Drag mode: left drag pans the map.')
+        else:
+            self._set_status('Edit mode: left click/drag edits waypoints.')
 
     def _ensure_selected_for_canvas(self) -> Optional[str]:
         if self.selected_name in self.waypoints:
@@ -787,10 +1098,126 @@ class WaypointEditor:
             self.new_station_waypoint()
         return self.selected_name
 
-    def _event_to_map(self, event) -> Tuple[float, float]:
+    def _event_to_map(self, event, snap: bool = False) -> Tuple[float, float]:
         canvas_x = self.canvas.canvasx(event.x)
         canvas_y = self.canvas.canvasy(event.y)
-        return self.canvas_to_map(canvas_x, canvas_y)
+        x, y = self.canvas_to_map(canvas_x, canvas_y)
+        if snap and self.snap_grid_var.get():
+            return self._snap_to_grid(x, y)
+        return x, y
+
+    def _snap_to_grid(self, x: float, y: float) -> Tuple[float, float]:
+        spacing = self._grid_spacing()
+        return (
+            round(x / spacing) * spacing,
+            round(y / spacing) * spacing,
+        )
+
+    def clear_measurement(self):
+        self.measure_start_map = None
+        self.measure_end_map = None
+        self._draw_overlays()
+        self._set_status('Measurement cleared.')
+
+    def _set_measure_status(self):
+        if not self.measure_start_map or not self.measure_end_map:
+            return
+        start_x, start_y = self.measure_start_map
+        end_x, end_y = self.measure_end_map
+        dx = end_x - start_x
+        dy = end_y - start_y
+        distance = math.hypot(dx, dy)
+        angle = normalize_degrees(math.degrees(math.atan2(dy, dx)))
+        self._set_status(
+            f'measure {distance:.3f} m | dx={dx:.3f}, dy={dy:.3f}, '
+            f'yaw={angle:.1f} deg'
+        )
+
+    def center_selected(self):
+        if not self.selected_name or self.selected_name not in self.waypoints:
+            self._set_status('No selected waypoint to center.')
+            return
+        x, y, _yaw = waypoint_xy_yaw(self.waypoints[self.selected_name])
+        canvas_x, canvas_y = self.map_to_canvas(x, y)
+        self._center_canvas_at(canvas_x, canvas_y)
+        self._set_status(f'Centered {self.selected_name}.')
+
+    def _center_canvas_at(self, canvas_x: float, canvas_y: float):
+        scrollregion = self.canvas.cget('scrollregion')
+        if not scrollregion:
+            return
+        _left, _top, right, bottom = [
+            float(value) for value in scrollregion.split()
+        ]
+        width = max(1.0, right)
+        height = max(1.0, bottom)
+        view_width = max(1, self.canvas.winfo_width())
+        view_height = max(1, self.canvas.winfo_height())
+        self.canvas.xview_moveto(
+            self._clamp((canvas_x - view_width / 2.0) / width, 0.0, 1.0)
+        )
+        self.canvas.yview_moveto(
+            self._clamp((canvas_y - view_height / 2.0) / height, 0.0, 1.0)
+        )
+
+    def _zoom_at(self, event_x: int, event_y: int, zoom: float):
+        map_x, map_y = self.canvas_to_map(
+            self.canvas.canvasx(event_x),
+            self.canvas.canvasy(event_y),
+        )
+        self.set_zoom(zoom)
+        canvas_x, canvas_y = self.map_to_canvas(map_x, map_y)
+        self.canvas.xview_moveto(
+            self._clamp(
+                (
+                    (canvas_x - event_x)
+                    / max(1.0, self.map_info.width * self.zoom)
+                ),
+                0.0,
+                1.0,
+            )
+        )
+        self.canvas.yview_moveto(
+            self._clamp(
+                (canvas_y - event_y) / max(1.0,
+                                           self.map_info.height * self.zoom),
+                0.0,
+                1.0,
+            )
+        )
+
+    def _nudge_selected(self, x_dir: int, y_dir: int):
+        if not self.selected_name or self.selected_name not in self.waypoints:
+            return
+        step = self._grid_spacing() if self.snap_grid_var.get() else 0.05
+        x, y, yaw = waypoint_xy_yaw(self.waypoints[self.selected_name])
+        self.waypoints[self.selected_name] = waypoint_pose(
+            x + x_dir * step,
+            y + y_dir * step,
+            yaw,
+        )
+        self._sync_fields_from_pose(self.selected_name)
+        self.mark_dirty()
+        self._draw_overlays()
+        self._set_status(
+            f'Nudged {self.selected_name} by {step:.3f} m.'
+        )
+
+    def _rotate_selected(self, delta_deg: float):
+        if not self.selected_name or self.selected_name not in self.waypoints:
+            return
+        x, y, yaw = waypoint_xy_yaw(self.waypoints[self.selected_name])
+        yaw += math.radians(delta_deg)
+        self.waypoints[self.selected_name] = waypoint_pose(x, y, yaw)
+        self._sync_fields_from_pose(self.selected_name)
+        self.mark_dirty()
+        self._draw_overlays()
+        self._set_status(
+            f'Rotated {self.selected_name} by {delta_deg:.1f} deg.'
+        )
+
+    def _clamp(self, value: float, minimum: float, maximum: float) -> float:
+        return max(minimum, min(maximum, value))
 
     def _nearest_waypoint(self, x: float, y: float) -> Optional[str]:
         best_name = None
@@ -951,15 +1378,12 @@ def parse_args(argv: Optional[List[str]] = None):
     )
     parser.add_argument(
         '--map',
-        default='/home/moonshot/ros2_ws/src/amr/map/robocup_map.yaml',
+        default=str(DEFAULT_MAP_PATH),
         help='Path to ROS map YAML.',
     )
     parser.add_argument(
         '--waypoints',
-        default=(
-            '/home/moonshot/ros2_ws/src/robocup_navigator/params/'
-            'robocup_waypoint.yaml'
-        ),
+        default=str(DEFAULT_WAYPOINTS_PATH),
         help='Path to navigator waypoint YAML.',
     )
     return parser.parse_args(argv)

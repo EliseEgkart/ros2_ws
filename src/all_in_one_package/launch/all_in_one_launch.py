@@ -51,7 +51,7 @@ def generate_launch_description():
                             'localization_launch.py'
                         )
                     ),
-                    launch_arguments={'map': os.path.expandvars('$HOME/ros2_ws/src/amr/map/0618.yaml')}.items(),
+                    launch_arguments={'map': os.path.expandvars('$HOME/ros2_ws/src/amr/map/demofinalA.yaml')}.items(),
                 ),
             ]
         ),
@@ -83,7 +83,7 @@ def generate_launch_description():
                     name='waypoint_marker_publisher',
                     output='screen',
                     parameters=[{
-                        'waypoints_file': '/home/st02/ros2_ws/src/robocup_navigator/params/stations_robocup.yaml'
+                        'waypoints_file': '/home/st02/ros2_ws/src/robocup_navigator/params/demofinalA.yaml'
                     }],
                 ),
             ]

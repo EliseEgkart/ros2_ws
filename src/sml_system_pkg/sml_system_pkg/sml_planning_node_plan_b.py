@@ -3,7 +3,7 @@
 Plan B:
 - 우리가 지금 만든 플래너
 - planning_plan_b 패키지 폴더 사용
-- 서비스: /sml/get_plan_plan_b
+- 서비스: /sml/get_plan
 """
 
 import rclpy

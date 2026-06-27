@@ -3,7 +3,7 @@
 Plan A:
 - 기존 플래너
 - planning_plan_a 패키지 폴더 사용
-- 서비스: /sml/get_plan_plan_a
+- 서비스: /sml/get_plan
 """
 
 import rclpy
@@ -81,7 +81,7 @@ class PlanningNodePlanA(Node):
 
         self.plan_srv = self.create_service(
             GetPlan,
-            '/sml/get_plan_=',
+            '/sml/get_plan',
             self.get_plan_callback,
         )
 

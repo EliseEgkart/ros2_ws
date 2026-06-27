@@ -50,7 +50,7 @@ class RobocupNavigator(Node):
         default_yaml = str(
             Path(get_package_share_directory('robocup_navigator'))
             / 'params'
-            / 'stations_robocup.yaml'
+            / 'robocup_waypoint.yaml'
         )
 
         # ## 변경되는 부분

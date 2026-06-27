@@ -46,7 +46,7 @@ Fourth Launch: amr localization_launch after 15 seconds
 
 ## 4. `ros2 launch all_in_one_package all_in_one_launch.py` 실행
 
-`for 웨이포이니트 찎어야지`
+`for 웨이포인트 찍어야지`
 
 ```sh
 ros2 launch all_in_one_package all_in_one_launch.py
@@ -57,7 +57,7 @@ ros2 launch all_in_one_package all_in_one_launch.py
 ## 5. 웨이포인트
 
 ```sh
-ros2 run amr_navigator goal_pose_generator --ros-args   -p output_file:=/home/st02/ros2_ws/src/robocup_navigator/params/*파일이름지정*.yaml
+ros2 run amr_navigator goal_pose_generator --ros-args   -p output_file:=/home/st02/ros2_ws/src/robocup_navigator/params/robocup_waypoint.yaml
 ```
 
 ```sh

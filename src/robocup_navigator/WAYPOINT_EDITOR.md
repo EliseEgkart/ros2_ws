@@ -61,6 +61,48 @@ waypoint를 실제로 수정하는 모드입니다.
 
 중간 마우스 버튼 드래그도 모든 모드에서 맵 이동으로 사용할 수 있습니다.
 
+### diff pair
+
+차동 구조 정렬용으로 `sub_goal`과 `goal`을 한 번에 찍는 오버레이 모드입니다.
+
+- 우측 `Diff pair toggle`: diff pair를 토글 방식으로 켜고 끄기
+- `Auto next station`: diff pair 완료 후 station 번호를 자동으로 +1
+- 왼쪽 드래그 시작점: `station_N_sub_goal`
+- 왼쪽 드래그 끝점: `station_N_goal`
+- 두 waypoint의 yaw: sub_goal에서 goal을 향하는 동일한 방향
+
+우측 `Competition Points`의 `Station` 값이 `N`으로 사용됩니다. 예를 들어 `Station`이 `3`이면 드래그 한 번으로 `station_3_sub_goal`과 `station_3_goal`이 함께 생성되거나 갱신됩니다.
+
+`Snap to grid`가 켜져 있으면 sub_goal과 goal 위치 모두 현재 grid 간격에 맞춰집니다.
+
+## Robot Preview
+
+우측 `Robot Preview` 패널에서 waypoint 기준 로봇 footprint를 미리 볼 수 있습니다.
+
+- `Show robot footprint`: 로봇 크기 표시 켜기/끄기
+- `Size X m`: 로봇 전후 길이
+- `Size Y m`: 로봇 좌우 폭
+- `Offset X m`: waypoint 기준 로봇 중심의 전방 오프셋
+- `Offset Y m`: waypoint 기준 로봇 중심의 좌측 오프셋
+- `Targets = selected`: 현재 선택 waypoint에만 표시
+- `Targets = point list`: 우측 포인트 리스트에서 선택한 waypoint에 표시
+- `Targets = all`: 모든 waypoint에 표시
+- `Select All`: 포인트 리스트 전체 선택 후 표시
+
+오프셋은 waypoint yaw 기준의 로컬 좌표입니다. 예를 들어 `Offset X m`이 `0.20`이면 로봇 중심이 waypoint보다 진행 방향으로 20 cm 앞에 표시됩니다.
+
+## Competition Points
+
+우측 `Competition Points` 패널은 대회용 waypoint 이름을 빠르게 다루기 위한 영역입니다.
+
+- `Station`: 현재 station 번호
+- `Prev` / `Next`: station 번호 이동
+- `Select Sub`: `station_N_sub_goal` 선택 또는 생성
+- `Select Goal`: `station_N_goal` 선택 또는 생성
+- `Create 1-20 Pairs`: `station_1_sub_goal`부터 `station_20_goal`까지 전체 pair 생성
+
+`Create 1-20 Pairs`는 이미 존재하는 waypoint 좌표를 덮어쓰지 않습니다. 없는 waypoint만 맵 중앙에 placeholder로 만들고, global `sequence`는 `station_1_sub_goal`, `station_1_goal`, ..., `station_20_sub_goal`, `station_20_goal` 순서로 정렬합니다.
+
 ## Grid와 Snap
 
 ### Show grid
@@ -90,7 +132,8 @@ waypoint를 실제로 수정하는 모드입니다.
 
 - `Save`: 현재 waypoint YAML에 저장
 - `Save As`: 다른 파일로 저장
-- `New/Update Station`: `station_N_goal` 또는 `station_N_sub_goal` 생성/갱신
+- `Undo`: 마지막 편집 되돌리기
+- `Redo`: 되돌린 편집 다시 적용
 - `Apply Fields`: 왼쪽 입력창의 이름, 좌표, yaw 값을 선택 waypoint에 적용
 - `New Custom`: station 형식이 아닌 일반 waypoint 생성
 - `Delete`: 선택 waypoint 삭제
@@ -103,6 +146,9 @@ waypoint를 실제로 수정하는 모드입니다.
 - 마우스 휠: 확대/축소
 - 중간 버튼 드래그: 맵 이동
 - `Ctrl+S`: 저장
+- `Ctrl+Z`: Undo
+- `Ctrl+Y`: Redo
+- `Ctrl+Shift+Z`: Redo
 - `Delete`: 선택 waypoint 삭제
 - `Alt+방향키`: 선택 waypoint 미세 이동
 - `Alt+Q`: 선택 waypoint yaw +5도

@@ -13,7 +13,7 @@ import threading
 
 ROBOT_IP = "10.0.2.8"
 
-HOME_JOINT_DEG   = np.array([-90.0,   0.0,  90.0, 0.0, 90.0, 0.0])
+HOME_JOINT_DEG   = np.array([-90.0,   13.28,  75.45, 0.0, 91.27, 0.0])
 MOVING_JOINT_DEG = np.array([-90.0, -26.02, 140.8, 0.0, 65.22, 0.0])
 
 # 슬롯별 웨이포인트 (joint, degree)

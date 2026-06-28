@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from arm_interfaces.srv import ArmCommand
+from sml_msgs.srv import ArmCommand
 
 
 class ManualCommandNode(Node):
@@ -10,12 +10,11 @@ class ManualCommandNode(Node):
         self.get_logger().info('[MANUAL] manual_command_node started')
         self.get_logger().info('[MANUAL] commands: load / unload / exit')
 
-    def call_arm(self, action, object_ids, location='', station_id=0):
+    def call_arm(self, action, object_ids, location=''):
         req = ArmCommand.Request()
         req.action = action
         req.object_ids = object_ids
         req.location = location
-        req.station_id = station_id
 
         while not self.client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warn('[MANUAL] waiting for /amr_robot_command service...')
@@ -68,7 +67,7 @@ class ManualCommandNode(Node):
                     raw = input('object_id (쉼표 구분, 예: 34,13): ').strip()
                     object_ids = self.parse_object_ids(raw)
                     sid = int(input('station_id (6=워크벤치 / 8=고객센터): ').strip())
-                    self.call_arm('UNLOAD', object_ids, station_id=sid)
+                    self.call_arm('UNLOAD', object_ids, location=str(sid))
 
                 elif cmd == 'assemble':
                     raw = input('product_id (예: 34): ').strip()

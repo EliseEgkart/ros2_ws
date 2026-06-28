@@ -2,7 +2,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
-from arm_interfaces.srv import Cargo, GetTargetPose, ArmCommand
+from arm_interfaces.srv import Cargo, GetTargetPose
+from sml_msgs.srv import ArmCommand
 from std_srvs.srv import Trigger
 import rbpodo as rb
 import numpy as np
@@ -928,6 +929,23 @@ class AmrRobotNode(Node):
 
     # --- 서비스 콜백 (LOAD / UNLOAD 분기) ---
 
+    def station_id_from_location(self, location):
+        raw = str(location).strip()
+        if not raw:
+            return 0
+
+        for prefix in ('station_', 'station:', 'station=', 'station '):
+            if raw.lower().startswith(prefix):
+                raw = raw[len(prefix):].strip()
+                break
+
+        try:
+            return int(raw)
+        except ValueError:
+            self.get_logger().warn(
+                f'[AMR] invalid location for station_id: {location!r}; use 0')
+            return 0
+
     def arm_robot_command_cb(self, request, response):
         response.slots = []
         response.object_ids = []
@@ -954,8 +972,9 @@ class AmrRobotNode(Node):
             if action == 'LOAD':
                 results = self.sequence_load_multi(list(request.object_ids))
             elif action == 'UNLOAD':
+                station_id = self.station_id_from_location(request.location)
                 results = self.sequence_unload_multi(
-                    list(request.object_ids), request.station_id)
+                    list(request.object_ids), station_id)
             else:
                 results = self.sequence_assemble_multi(list(request.object_ids))
 

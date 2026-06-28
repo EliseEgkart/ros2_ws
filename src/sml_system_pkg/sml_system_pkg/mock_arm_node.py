@@ -3,11 +3,11 @@ mock_arm_node.py
 /amr_robot_command Service 서버 mock.
 request를 받으면 0.5초 후 success=True 응답.
 
-인터페이스: arm_interfaces.srv.ArmCommand (실제/최신 정의 기준)
+인터페이스: sml_msgs.srv.ArmCommand
     Request:
         string action
         int32[] object_ids
-        string location
+        string location  # UNLOAD 대상 station_id를 문자열로 전달
     Response:
         bool success
         int32[] slots

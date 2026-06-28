@@ -395,7 +395,7 @@ class SmlManagerNode(Node):
         req = ArmCommand.Request()
         req.action     = 'LOAD' if step.action == Step.LOAD else 'UNLOAD'
         req.object_ids = list(step.object_ids)
-        req.location   = ''
+        req.location   = str(int(step.station_id))
 
         self.get_logger().info(
             f'[ARM] step {step.step_id} → '

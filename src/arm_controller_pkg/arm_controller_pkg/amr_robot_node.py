@@ -218,35 +218,14 @@ ASSEMBLY_Z_DOWN_MM = 90.0   # layer 0 기준 블록 내려놓기 하강 거리 (
 ASSEMBLY_Z_UP_MM   = -90.0  # layer 0 기준 블록 내려놓기 상승 거리 (mm)
 BLOCK_H_MM         = 19.0   # 블록 1개 높이 (mm)
 
-# UNLOAD / 조립 재료 픽업용 슬롯 조인트 (direct move_j, 중간 웨이포인트 없음)
-# 키: slot*10 + layer_index  (예: 슬롯2 layer0 → 20, 슬롯2 layer1 → 21)
-# UNLOAD 시 layer_index=0 (최상단), ASSEMBLE 시 레이어별 사용
+# UNLOAD 픽업용 슬롯 조인트 (direct move_j, 중간 웨이포인트 없음)
+# 키: slot 번호 (슬롯 2~6)
 UNLOAD_SLOT_JOINTS = {
-    20: np.array([-266.65,-10.78, 60.26, -1.40, 107.07, 2.67]),
-    21: np.array([-266.87, -7.18, 55.88, -1.31, 107.85, 2.47]),
-    22: np.array([-267.06, -3.39, 51.06, -1.24, 108.88, 2.3]),
-    23: np.array([-267.23, 0.65, 45.68, -1.18, 110.22, 2.14]),
-    24: np.array([-267.38, 5.07, 39.51, -1.13, 111.96, 1.98]),
-    30: np.array([-246.79, -8.18, 58.19, -9.5, 107.99, 18.52]),
-    31: np.array([-248.19, -4.65, 53.71, -9.0, 108.77, 17.25]),
-    32: np.array([-249.43, -0.91, 48.75, -8.56, 109.83, 16.07]),
-    33: np.array([-250.55, 3.14, 43.16, -8.18, 111.23, 14.97]),
-    34: np.array([-251.55, 7.64, 36.67, -7.88, 113.10, 13.91]),
-    40: np.array([-231.78, -1.0, 51.34, -15.23, 110.13, 30.48]),
-    41: np.array([-233.70, 2.51, 46.39, -14.67, 111.15, 28.58]),
-    42: np.array([-235.45, 6.37, 40.76, -14.18, 112.53, 26.75]),
-    43: np.array([-237.06, 10.76, 34.14, -13.78, 114.42, 24.94]),
-    44: np.array([-238.53, 16.09, 25.78, -13.53, 117.13, 23.05]),
-    50: np.array([-210.75, -15.79, 65.59, -22.38, 115.86, 46.85]),
-    51: np.array([-214.49, -13.46, 62.51, -21.35, 115.50, 43.62]),
-    52: np.array([-217.91, -10.93, 59.16, -20.37, 115.36, 40.63]),
-    53: np.array([-221.04, -8.21, 55.51, -19.45, 115.44, 37.87]),
-    54: np.array([-223.89, -5.26, 51.50, -18.61, 115.76, 35.31]),
-    60: np.array([-228.30, -25.67, 71.33, -16.99, 114.78, 31.97]),
-    61: np.array([-232.32, -22.33, 68.38, -15.49, 114.16, 28.85]),
-    62: np.array([-235.12, -19.44, 65.21, -14.21, 113.81, 26.18]),
-    63: np.array([-238.61, -16.42, 61.78, -13.11, 113.71, 23.89]),
-    64: np.array([-241.08, -13.25, 58.07, -12.17, 113.86, 21.89]),
+    2: np.array([-266.65,-10.78, 60.26, -1.40, 107.07, 2.67]),
+    3: np.array([-246.79, -8.18, 58.19, -9.5, 107.99, 18.52]),
+    4: np.array([-231.78, -1.0, 51.34, -15.23, 110.13, 30.48]),
+    5: np.array([-210.75, -15.79, 65.59, -22.38, 115.86, 46.85]),
+    6: np.array([-228.30, -25.67, 71.33, -16.99, 114.78, 31.97]),
 }
 
 MATERIAL_NAMES = {
@@ -591,7 +570,7 @@ class AmrRobotNode(Node):
 
         # UNLOAD 시 UNLOAD_SLOT_JOINTS에 정의된 슬롯(2~6)은 마지막 위치만 교체한다.
         if for_unload:
-            unload_joint = UNLOAD_SLOT_JOINTS.get(slot * 10)
+            unload_joint = UNLOAD_SLOT_JOINTS.get(slot)
             if unload_joint is not None:
                 move_waypoints[-1] = unload_joint
 
@@ -1464,13 +1443,7 @@ class AmrRobotNode(Node):
                     f'[AMR] assemble failed at product_id={product_id}, stopping')
                 break
 
-        # 성공 시: 조립 위치에서 SLOT_WAYPOINTS 역순으로 안전하게 복귀
-        # 실패 시: sequence_assemble 내부에서 이미 go_home() 호출됨
-        all_ok = bool(results) and all(r['success'] for r in results)
-        if all_ok:
-            self.return_from_slot(target_slot)
-        else:
-            self.go_home()
+        self.go_home()
         self.go_moving_pose()
         return results
 
@@ -1551,7 +1524,7 @@ class AmrRobotNode(Node):
                 }
 
             # 4. 조립용 슬롯 조인트로 직접 이동 (조립 위치에서 출발)
-            slot_joint = UNLOAD_SLOT_JOINTS.get(slot * 10 + layer_index)
+            slot_joint = UNLOAD_SLOT_JOINTS.get(slot)
             if slot_joint is None:
                 self.get_logger().error(
                     f'[AMR] no unload slot joint for slot={slot} layer={layer_index}')

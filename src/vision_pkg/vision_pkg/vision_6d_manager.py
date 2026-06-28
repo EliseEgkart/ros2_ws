@@ -109,6 +109,11 @@ class Vision6DPoseManager:
             .as_video_stream_profile()
             .get_intrinsics()
         )
+        self.depth_scale = (
+            profile.get_device()
+            .first_depth_sensor()
+            .get_depth_scale()
+        )
 
         self._log_info(
             f"6D ensemble loaded: det={self.det_model_path}, seg={self.seg_model_path}, "
@@ -172,6 +177,15 @@ class Vision6DPoseManager:
                 if det_result.boxes is None:
                     continue
 
+                depth_image = np.asanyarray(depth_frame.get_data())
+
+                ransac_object_mask, below_floor_mask, plane_model = self.build_ransac_object_masks(
+                    depth_image=depth_image,
+                    object_min_height_m=0.006,
+                    object_max_height_m=0.120,
+                    below_floor_margin_m=0.006,
+                )
+
                 all_z_values = []
                 frame_targets = []
                 detections_for_vis = []
@@ -205,6 +219,33 @@ class Vision6DPoseManager:
                                 "z": 0.0,
                                 "yaw": 0.0,
                                 "class_name": f"{cls_name}_edge_cut",
+                                "is_target": False,
+                            }
+                        )
+                        continue
+
+                    depth_keep, depth_reason = self.is_detection_inside_ransac_object_region(
+                        xyxy=xyxy,
+                        image_shape=image.shape,
+                        object_mask=ransac_object_mask,
+                        below_floor_mask=below_floor_mask,
+                        seg_result=seg_result,
+                        target_u=u,
+                        target_v=v,
+                        match_distance_px=self.match_distance_px,
+                        min_object_overlap=0.10,
+                        min_center_overlap=0.20,
+                        max_below_overlap=0.25,
+                    )
+
+                    if not depth_keep:
+                        detections_for_vis.append(
+                            {
+                                "u": u,
+                                "v": v,
+                                "z": 0.0,
+                                "yaw": 0.0,
+                                "class_name": f"{cls_name}_{depth_reason}",
                                 "is_target": False,
                             }
                         )
@@ -251,6 +292,12 @@ class Vision6DPoseManager:
                             "is_target": True,
                         }
                     )
+                    floor_z_at_center = self.get_plane_depth_at_pixel(
+                        plane_model=plane_model,
+                        u=best["u"] if False else u,
+                        v=best["v"] if False else v,
+                    )
+
                     frame_targets.append(
                         {
                             "u": u,
@@ -258,15 +305,21 @@ class Vision6DPoseManager:
                             "z": z,
                             "yaw": yaw,
                             "detected_class": str(cls_name),
+                            "floor_z": floor_z_at_center,
                         }
                     )
 
                 current_best = None
-                if frame_targets and all_z_values:
-                    floor_z = max(all_z_values)
+                if frame_targets:
                     best = min(frame_targets, key=lambda item: item["z"])
                     current_best = best
+
+                    floor_z = best.get("floor_z", 0.0)
+                    if floor_z is None or floor_z <= 0.0:
+                        floor_z = max(all_z_values) if all_z_values else best["z"]
+
                     layer = int(round((floor_z - best["z"]) / 0.016)) + 1
+
                     x_m, y_m, z_m = rs.rs2_deproject_pixel_to_point(
                         self.intrinsics,
                         [best["u"], best["v"]],
@@ -349,6 +402,15 @@ class Vision6DPoseManager:
         image = np.asanyarray(color_frame.get_data())
         det_result = model_det(image, verbose=False)[0]
         seg_result = model_seg(image, verbose=False)[0]
+
+        depth_image = np.asanyarray(depth_frame.get_data())
+
+        ransac_object_mask, below_floor_mask, plane_model = self.build_ransac_object_masks(
+            depth_image=depth_image,
+            object_min_height_m=0.006,
+            object_max_height_m=0.120,
+            below_floor_margin_m=0.006,
+        )
 
         detections_for_vis = []
         best = None
@@ -617,6 +679,338 @@ class Vision6DPoseManager:
         )
 
         return bool(mask_touches_border)
+
+    def build_ransac_object_masks(
+        self,
+        depth_image,
+        min_depth_m=0.15,
+        max_depth_m=1.20,
+        ransac_threshold_m=0.006,
+        object_min_height_m=0.006,
+        object_max_height_m=0.120,
+        below_floor_margin_m=0.006,
+        num_iter=100,
+        max_points=8000,
+    ):
+        """
+        RANSAC으로 바닥 plane을 찾고,
+        바닥보다 카메라 쪽으로 튀어나온 영역과
+        바닥보다 더 멀어진 영역을 mask로 만든다.
+
+        height = z_plane - z_measured
+
+        height > 0  : 바닥보다 카메라 쪽, 물체 후보
+        height < 0  : 바닥보다 더 멂, 비활성화 후보
+        """
+        if depth_image is None:
+            return None, None, None
+
+        depth_m = depth_image.astype(np.float32) * float(self.depth_scale)
+        h, w = depth_m.shape[:2]
+
+        valid = (
+            np.isfinite(depth_m) &
+            (depth_m > min_depth_m) &
+            (depth_m < max_depth_m)
+        )
+
+        if np.count_nonzero(valid) < 300:
+            return None, None, None
+
+        yy, xx = np.indices((h, w), dtype=np.float32)
+
+        fx = float(self.intrinsics.fx)
+        fy = float(self.intrinsics.fy)
+        cx = float(self.intrinsics.ppx)
+        cy = float(self.intrinsics.ppy)
+
+        z = depth_m
+        x = (xx - cx) / fx * z
+        y = (yy - cy) / fy * z
+
+        points = np.stack(
+            [x[valid], y[valid], z[valid]],
+            axis=1
+        ).astype(np.float32)
+
+        if points.shape[0] < 300:
+            return None, None, None
+
+        plane_model = self.fit_plane_ransac_numpy(
+            points=points,
+            num_iter=num_iter,
+            distance_threshold=ransac_threshold_m,
+            max_points=max_points,
+        )
+
+        if plane_model is None:
+            return None, None, None
+
+        a, b, c, d = plane_model
+
+        if abs(c) < 1e-6:
+            return None, None, None
+
+        z_plane = -(a * x + b * y + d) / c
+
+        height_from_floor = z_plane - z
+
+        object_mask = (
+            valid &
+            (height_from_floor > object_min_height_m) &
+            (height_from_floor < object_max_height_m)
+        )
+
+        below_floor_mask = (
+            valid &
+            (height_from_floor < -below_floor_margin_m)
+        )
+
+        object_u8 = object_mask.astype(np.uint8) * 255
+        below_u8 = below_floor_mask.astype(np.uint8) * 255
+
+        kernel3 = np.ones((3, 3), np.uint8)
+        kernel5 = np.ones((5, 5), np.uint8)
+
+        object_u8 = cv2.morphologyEx(object_u8, cv2.MORPH_OPEN, kernel3)
+        object_u8 = cv2.morphologyEx(object_u8, cv2.MORPH_CLOSE, kernel5)
+
+        below_u8 = cv2.morphologyEx(below_u8, cv2.MORPH_CLOSE, kernel5)
+
+        return object_u8 > 0, below_u8 > 0, plane_model
+
+    @staticmethod
+    def fit_plane_ransac_numpy(
+        points,
+        num_iter=100,
+        distance_threshold=0.006,
+        max_points=8000,
+    ):
+        """
+        points: Nx3, meter 단위.
+        return: plane [a, b, c, d]
+                ax + by + cz + d = 0
+        """
+        if points is None or points.shape[0] < 3:
+            return None
+
+        rng = np.random.default_rng()
+
+        if points.shape[0] > max_points:
+            idx = rng.choice(points.shape[0], size=max_points, replace=False)
+            sample_points = points[idx]
+        else:
+            sample_points = points
+
+        n_points = sample_points.shape[0]
+        if n_points < 3:
+            return None
+
+        best_plane = None
+        best_inlier_mask = None
+        best_count = -1
+
+        for _ in range(num_iter):
+            ids = rng.choice(n_points, size=3, replace=False)
+            p1, p2, p3 = sample_points[ids]
+
+            normal = np.cross(p2 - p1, p3 - p1)
+            norm = np.linalg.norm(normal)
+
+            if norm < 1e-8:
+                continue
+
+            normal = normal / norm
+            d = -float(np.dot(normal, p1))
+
+            distances = np.abs(sample_points @ normal + d)
+            inlier_mask = distances < distance_threshold
+            count = int(np.count_nonzero(inlier_mask))
+
+            if count > best_count:
+                best_count = count
+                best_plane = np.array(
+                    [normal[0], normal[1], normal[2], d],
+                    dtype=np.float32,
+                )
+                best_inlier_mask = inlier_mask
+
+        if best_plane is None or best_inlier_mask is None:
+            return None
+
+        inliers = sample_points[best_inlier_mask]
+        if inliers.shape[0] < 3:
+            return best_plane
+
+        centroid = np.mean(inliers, axis=0)
+        centered = inliers - centroid
+
+        try:
+            _, _, vh = np.linalg.svd(centered, full_matrices=False)
+            normal = vh[-1]
+            normal = normal / (np.linalg.norm(normal) + 1e-8)
+            d = -float(np.dot(normal, centroid))
+
+            return np.array(
+                [normal[0], normal[1], normal[2], d],
+                dtype=np.float32,
+            )
+        except Exception:
+            return best_plane
+
+    def get_plane_depth_at_pixel(self, plane_model, u, v):
+        """
+        특정 픽셀 위치에서 RANSAC plane의 예상 depth z를 계산한다.
+        """
+        if plane_model is None:
+            return 0.0
+
+        a, b, c, d = plane_model
+
+        fx = float(self.intrinsics.fx)
+        fy = float(self.intrinsics.fy)
+        cx = float(self.intrinsics.ppx)
+        cy = float(self.intrinsics.ppy)
+
+        rx = (float(u) - cx) / fx
+        ry = (float(v) - cy) / fy
+
+        denom = a * rx + b * ry + c
+
+        if abs(denom) < 1e-8:
+            return 0.0
+
+        z_plane = -d / denom
+
+        if not np.isfinite(z_plane) or z_plane <= 0.0:
+            return 0.0
+
+        return float(z_plane)
+
+    @staticmethod
+    def is_detection_inside_ransac_object_region(
+        xyxy,
+        image_shape,
+        object_mask,
+        below_floor_mask,
+        seg_result=None,
+        target_u=None,
+        target_v=None,
+        match_distance_px=40.0,
+        min_object_overlap=0.10,
+        min_center_overlap=0.20,
+        max_below_overlap=0.25,
+        center_radius_px=8,
+    ):
+        """
+        YOLO detection이 RANSAC 기반 object 영역에 실제로 걸치는지 검사.
+
+        True  -> 활성화
+        False -> 비활성화
+
+        object_mask:
+            바닥보다 카메라 쪽으로 튀어나온 영역
+
+        below_floor_mask:
+            바닥보다 더 멀어진 영역
+        """
+        if object_mask is None or below_floor_mask is None:
+            # RANSAC 실패 시 전체 파이프라인이 죽지 않도록 일단 통과.
+            # 강하게 막고 싶으면 여기서 False를 반환해도 됨.
+            return True, "ransac_unavailable"
+
+        h, w = image_shape[:2]
+
+        candidate = np.zeros((h, w), dtype=np.uint8)
+
+        x1, y1, x2, y2 = map(float, xyxy)
+
+        x1i = int(np.clip(round(x1), 0, w - 1))
+        y1i = int(np.clip(round(y1), 0, h - 1))
+        x2i = int(np.clip(round(x2), 0, w - 1))
+        y2i = int(np.clip(round(y2), 0, h - 1))
+
+        best_mask_pts = None
+
+        if (
+            seg_result is not None and
+            seg_result.masks is not None and
+            seg_result.boxes is not None and
+            target_u is not None and
+            target_v is not None
+        ):
+            min_dist = float("inf")
+
+            for idx, seg_box in enumerate(seg_result.boxes):
+                seg_xyxy = seg_box.xyxy[0].cpu().numpy()
+                seg_u = int((seg_xyxy[0] + seg_xyxy[2]) / 2)
+                seg_v = int((seg_xyxy[1] + seg_xyxy[3]) / 2)
+
+                dist = ((target_u - seg_u) ** 2 + (target_v - seg_v) ** 2) ** 0.5
+
+                if dist < match_distance_px and dist < min_dist:
+                    min_dist = dist
+                    if len(seg_result.masks.xy) > idx:
+                        best_mask_pts = np.asarray(
+                            seg_result.masks.xy[idx],
+                            dtype=np.int32,
+                        )
+
+        if best_mask_pts is not None and len(best_mask_pts) >= 3:
+            cv2.fillPoly(candidate, [best_mask_pts], 255)
+        else:
+            cv2.rectangle(candidate, (x1i, y1i), (x2i, y2i), 255, -1)
+
+        candidate_bool = candidate > 0
+        candidate_area = int(np.count_nonzero(candidate_bool))
+
+        if candidate_area < 10:
+            return False, "empty_candidate"
+
+        object_overlap = (
+            np.count_nonzero(candidate_bool & object_mask) /
+            float(candidate_area)
+        )
+
+        below_overlap = (
+            np.count_nonzero(candidate_bool & below_floor_mask) /
+            float(candidate_area)
+        )
+
+        center_overlap = 0.0
+        if target_u is not None and target_v is not None:
+            center_mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.circle(
+                center_mask,
+                (int(target_u), int(target_v)),
+                int(center_radius_px),
+                255,
+                -1,
+            )
+
+            center_bool = center_mask > 0
+            center_area = int(np.count_nonzero(center_bool))
+
+            if center_area > 0:
+                center_overlap = (
+                    np.count_nonzero(center_bool & object_mask) /
+                    float(center_area)
+                )
+
+        has_object_depth = (
+            object_overlap >= min_object_overlap or
+            center_overlap >= min_center_overlap
+        )
+
+        too_much_below_floor = below_overlap > max_below_overlap
+
+        if not has_object_depth:
+            return False, f"no_ransac_object_{object_overlap:.2f}_{center_overlap:.2f}"
+
+        if too_much_below_floor:
+            return False, f"below_floor_{below_overlap:.2f}"
+
+        return True, "ok"
 
     @staticmethod
     def get_valid_depth(depth_frame, u, v, search_radius=10):

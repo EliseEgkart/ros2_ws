@@ -1,6 +1,7 @@
 # ArmCommand.srv
 string action
 int32[] object_ids
+int32  station_id
 string location
 ---
 bool success

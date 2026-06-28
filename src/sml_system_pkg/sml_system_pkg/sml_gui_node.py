@@ -20,7 +20,7 @@ Run:
 Optional:
     ros2 run sml_system_pkg sml_gui_node --ros-args \
       -p side:=a \
-      -p station_coord_json:=/home/user/ros2_ws/src/sml_system_pkg/config/station_coordinates_a_zone.json \
+      -p station_coord_json:=/home/st02/ros2_ws/src/sml_system_pkg/config/station_coordinates_a_zone.json \
       -p gui_invert_y:=true
 
 If tkinter is missing:

@@ -74,6 +74,12 @@ class Executor:
         # Phase 1: recycle pickups (customer counter → workbench → disassembly)
         self._run_recycle_phase()
 
+        # After Phase 1: reclaimed materials may already satisfy a workbench product.
+        if self._should_go_workbench():
+            self._divert_to_workbench()
+        if self._should_deliver():
+            self._deliver_all()
+
         # Phase 2: main pickup loop
         self._run_pickup_phase()
 
@@ -202,7 +208,7 @@ class Executor:
             complete = self._allocator.confirm_placed(cargo_id, material_id)
             if complete:
                 self._log(
-                    f"  ✓ in-transit assembly complete on cargo {cargo_id}"
+                    f"  [DONE] in-transit assembly complete on cargo {cargo_id}"
                 )
                 self._pending_deliveries += 1
 

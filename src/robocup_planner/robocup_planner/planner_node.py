@@ -195,7 +195,7 @@ class PlannerNode(Node):
             ]
 
         satisfied, missing = check_storage_satisfies(storage_mid, net_aidlist)
-        needs_recycling = bool(recycle_ids) and not satisfied if recycle_ids else False
+        needs_recycling = bool(recycle_ids)
 
         if not satisfied and not recycle_ids:
             self.get_logger().warning(

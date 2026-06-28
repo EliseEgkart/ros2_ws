@@ -171,6 +171,8 @@ class CargoManager:
             if remaining.get(mat_id, 0) > 0:
                 available.append((cargo_id, placement_idx, mat_id))
                 remaining[mat_id] -= 1
+                if remaining[mat_id] == 0:
+                    del remaining[mat_id]
 
         return available if not remaining else None
 

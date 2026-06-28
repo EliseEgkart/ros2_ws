@@ -72,6 +72,8 @@ SLOT_WAYPOINTS = {
         np.array([-220.0, -11.96, 57.40, 0.0, 100.40, 0.0]),
         np.array([-242.58, -10.98, 55.32, -11.60, 114.11, 20.65]),
     ],
+    # 슬롯 7, 8: 조립 완성품 언로드 전용 (측면 접근, Tool Z+ 방향으로 그립 후 Base Z+ 상승)
+    # TODO: 티칭 후 실제 경유 조인트로 교체
     7: [
         np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]),
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
@@ -79,8 +81,6 @@ SLOT_WAYPOINTS = {
         np.array([-220.0, -11.96, 57.40, 0.0, 100.40, 0.0]),
         np.array([-267.6, -2.88, 56.45, 0.0, 126.41, 2.42]),
     ],
-    # 슬롯 8: 조립 완성품 언로드 전용 (측면 접근, Tool Z+ 방향으로 그립 후 Base Z+ 상승)
-    # TODO: 티칭 후 실제 경유 조인트로 교체
     8: [
         np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]),
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
@@ -267,31 +267,11 @@ BLOCK_H_MM         = 19.5   # 블록 1개 높이 (mm)
 # 조립 중 재료 픽업용 슬롯 조인트 (direct move_j, 중간 웨이포인트 없음)
 # TODO: 티칭 후 실제 값으로 교체
 ASSEMBLY_SLOT_JOINTS = {
-    20: np.array([-266.65,-10.78, 60.26, -1.40, 107.07, 2.67]),
-    21: np.array([-266.87, -7.18, 55.88, -1.31, 107.85, 2.47]),
-    22: np.array([-267.06, -3.39, 51.06, -1.24, 108.88, 2.3]),
-    23: np.array([-267.23, 0.65, 45.68, -1.18, 110.22, 2.14]),
-    24: np.array([-267.38, 5.07, 39.51, -1.13, 111.96, 1.98]),
-    30: np.array([-246.79, -8.18, 58.19, -9.5, 107.99, 18.52]),
-    31: np.array([-248.19, -4.65, 53.71, -9.0, 108.77, 17.25]),
-    32: np.array([-249.43, -0.91, 48.75, -8.56, 109.83, 16.07]),
-    33: np.array([-250.55, 3.14, 43.16, -8.18, 111.23, 14.97]),
-    34: np.array([-251.55, 7.64, 36.67, -7.88, 113.10, 13.91]),
-    40: np.array([-231.78, -1.0, 51.34, -15.23, 110.13, 30.48]),
-    41: np.array([-233.70, 2.51, 46.39, -14.67, 111.15, 28.58]),
-    42: np.array([-235.45, 6.37, 40.76, -14.18, 112.53, 26.75]),
-    43: np.array([-237.06, 10.76, 34.14, -13.78, 114.42, 24.94]),
-    44: np.array([-238.53, 16.09, 25.78, -13.53, 117.13, 23.05]),
-    50: np.array([-210.75, -15.79, 65.59, -22.38, 115.86, 46.85]),
-    51: np.array([-214.49, -13.46, 62.51, -21.35, 115.50, 43.62]),
-    52: np.array([-217.91, -10.93, 59.16, -20.37, 115.36, 40.63]),
-    53: np.array([-221.04, -8.21, 55.51, -19.45, 115.44, 37.87]),
-    54: np.array([-223.89, -5.26, 51.50, -18.61, 115.76, 35.31]),
-    60: np.array([-228.30, -25.67, 71.33, -16.99, 114.78, 31.97]),
-    61: np.array([-232.32, -22.33, 68.38, -15.49, 114.16, 28.85]),
-    62: np.array([-235.12, -19.44, 65.21, -14.21, 113.81, 26.18]),
-    63: np.array([-238.61, -16.42, 61.78, -13.11, 113.71, 23.89]),
-    64: np.array([-241.08, -13.25, 58.07, -12.17, 113.86, 21.89]),
+    2: np.array([-266.65,-10.78, 60.26, -1.40, 107.07, 2.67]),
+    3: np.array([-246.79, -8.18, 58.19, -9.5, 107.99, 18.52]),
+    4: np.array([-231.78, -1.0, 51.34, -15.23, 110.13, 30.48]),
+    5: np.array([-210.75, -15.79, 65.59, -22.38, 115.86, 46.85]),
+    6: np.array([-228.30, -25.67, 71.33, -16.99, 114.78, 31.97]),
 }
 
 MATERIAL_NAMES = {
@@ -601,7 +581,7 @@ class AmrRobotNode(Node):
         # (이동량 0인 move_j는 wait_for_move_finished가 완료 신호를 제대로 못 받아
         #  timeout까지 대기하면서 큰 지연을 유발할 수 있음)
         # _at_home   : 직전에 HOME 도달한 경우 빠른 스킵(데이터 채널 read 생략)
-        # is_at_home(): 노드 시작 직후처럼 플래그가 없어도 실제 조인트가 HOME이면 스킵
+        # is_at_home(): 노드amr_robot_node.py 시작 직후처럼 플래그가 없어도 실제 조인트가 HOME이면 스킵
         if self._at_home or self.is_at_home():
             self._at_home = True
             self.get_logger().info('[AMR] already at home, skip go_home')
@@ -623,7 +603,7 @@ class AmrRobotNode(Node):
 
     # --- 웨이포인트 이동 (action별 테이블을 인자로 받음) ---
 
-    def move_to_slot(self, slot):
+    def move_to_slot(self, slot, for_unload=False):
         waypoints = SLOT_WAYPOINTS.get(slot)
         if waypoints is None:
             self.get_logger().error(f'[AMR] no waypoints for slot={slot}')
@@ -634,7 +614,11 @@ class AmrRobotNode(Node):
         self._at_home = False
 
         # 정방향 첫 번째 waypoint는 HOME_JOINT_DEG라서 스킵한다.
-        move_waypoints = waypoints[1:]
+        move_waypoints = list(waypoints[1:])
+
+        # UNLOAD 시 ASSEMBLY_SLOT_JOINTS에 정의된 슬롯(2~6)은 마지막 위치만 교체한다.
+        if for_unload and slot in ASSEMBLY_SLOT_JOINTS:
+            move_waypoints[-1] = ASSEMBLY_SLOT_JOINTS[slot]
 
         for idx, wp in enumerate(move_waypoints, start=2):
             if not self.move_j_checked(wp, label=f'move_to_slot({slot}) wp{idx}'):
@@ -1339,8 +1323,8 @@ class AmrRobotNode(Node):
                 'message': 'go_home failed',
             }
 
-        # 3. 웨이포인트 순서대로 슬롯으로 이동
-        if not self.move_to_slot(slot):
+        # 3. 웨이포인트 순서대로 슬롯으로 이동 (UNLOAD 전용 마지막 위치 사용)
+        if not self.move_to_slot(slot, for_unload=True):
             self.go_home()
             return {
                 'success': False,

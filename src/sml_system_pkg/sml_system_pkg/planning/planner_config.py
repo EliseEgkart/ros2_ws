@@ -6,7 +6,21 @@ Slot convention used by Step.slide_ids:
     slot 7-8 : AMR assembly slots / recycle auxiliary preload slots
 """
 
+import os
 from dataclasses import dataclass
+
+
+def _default_config_path(filename: str) -> str:
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        return os.path.join(
+            get_package_share_directory('sml_system_pkg'),
+            'config',
+            filename,
+        )
+    except Exception:
+        return os.path.expanduser(f'~/ros2_ws/src/sml_system_pkg/config/{filename}')
 
 PRODUCT_NAMES = {
     34: 'Battery',
@@ -70,13 +84,11 @@ WB_RECYCLE_TIME_SEC_PER_CONNECTION = 10.0
 NAV_OVERHEAD_SEC = 0.0
 
 STATION_COORD_JSON_PARAM = 'station_coord_json_path'
-DEFAULT_STATION_COORD_JSON_PATH = (
-    '/home/user/ros2_ws/src/sml_system_pkg/config/station_coordinates_a_zone.json'
+DEFAULT_STATION_COORD_JSON_PATH = _default_config_path(
+    'station_coordinates_a_zone.json'
 )
 WAYPOINT_YAML_PARAM = 'waypoint_yaml_path'
-DEFAULT_WAYPOINT_YAML_PATH = (
-    '/home/user/ros2_ws/src/sml_system_pkg/config/robocup_waypoint.yaml'
-)
+DEFAULT_WAYPOINT_YAML_PATH = _default_config_path('robocup_waypoint.yaml')
 
 # Optional fixed costs added to waypoint-based navigation estimates.
 # Keep the defaults at zero until measured averages are supplied as ROS params.

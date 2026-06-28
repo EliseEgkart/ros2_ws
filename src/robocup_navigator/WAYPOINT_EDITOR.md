@@ -91,6 +91,43 @@ waypoint를 실제로 수정하는 모드입니다.
 
 오프셋은 waypoint yaw 기준의 로컬 좌표입니다. 예를 들어 `Offset X m`이 `0.20`이면 로봇 중심이 waypoint보다 진행 방향으로 20 cm 앞에 표시됩니다.
 
+## Rotation
+
+우측 `Diff Pair` 아래 `Rotation` 패널은 goal waypoint별 후처리 회전을 설정합니다.
+
+- 적용 대상: `station_N_goal`만 유효
+- `station_N_sub_goal`의 rotation 설정은 저장/실행하지 않음
+- `Target`: 현재 회전 설정 대상과 상태 표시
+- `Use rotation`: 선택한 goal의 회전 활성화
+- 기본값: `counterclockwise`, `150.0` deg
+- `Drag to set angle`: 선택한 goal의 yaw를 기준으로 마우스 드래그 방향까지의 회전 각도 설정
+- `Show backup + turn path`: navigator 후처리 궤적 미리보기
+- `Direction`: `clockwise` 또는 `counterclockwise`
+- `Angle deg`: goal 도착 후 회전할 각도
+- `Backup m`: goal pose 기준 후진 거리, 기본값 `0.20`
+- `Speed rad/s`: 회전 각속도, 기본값 `1.4`
+- `Set Manual`: 직접 입력한 `Direction`, `Angle deg`를 현재 goal에 반영
+- `Remove`: 현재 선택 goal의 회전 설정 제거
+
+회전 설정은 waypoint YAML이 아니라 별도 파일에 저장됩니다.
+
+```text
+$HOME/ros2_ws/src/robocup_navigator/params/robocup_rotation_profiles.yaml
+```
+
+저장 형식:
+
+```yaml
+rotation_profiles:
+  station_1_goal:
+    direction: counterclockwise
+    angle_deg: 150.0
+```
+
+지도에서는 goal 주변에 시계/반시계 방향 arc로 회전 방향이 표시됩니다.
+
+`Show backup + turn path`를 켜면 goal pose에서 뒤로 `Backup m`만큼 이동한 지점과, 그 지점에서 제자리 회전할 때 로봇 footprint가 차지하는 외접 반경이 함께 표시됩니다. navigator의 실제 회전 명령은 `linear.x=0`, `angular.z`만 사용하므로 로봇 중심 회전반경은 `0.00 m`입니다.
+
 ## Competition Points
 
 우측 `Competition Points` 패널은 대회용 waypoint 이름을 빠르게 다루기 위한 영역입니다.

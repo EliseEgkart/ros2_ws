@@ -36,6 +36,14 @@ class StationProfile:
         self.post_process = post_process
 
 
+class RotationProfile:
+    def __init__(self, waypoint_name: str, direction: str, angle_deg: float):
+        self.waypoint_name = waypoint_name
+        self.direction = direction
+        self.angle_deg = angle_deg
+        self.angle_rad = math.radians(angle_deg)
+
+
 class RobocupNavigator(Node):
     """Action server that converts station IDs into stable Nav2 sequences."""
 
@@ -47,19 +55,31 @@ class RobocupNavigator(Node):
         self._active_nav_goal_handle = None
         self._pending_post_process_profile: Optional[StationProfile] = None
 
-        default_yaml = str(
-            Path(get_package_share_directory('robocup_navigator'))
-            / 'params'
-            / 'robocup_waypoint.yaml'
+        share_params_dir = (
+            Path(get_package_share_directory('robocup_navigator')) / 'params'
         )
+        source_params_dir = (
+            Path.home() / 'ros2_ws/src/robocup_navigator/params'
+        )
+        default_yaml_path = source_params_dir / 'robocup_waypoint.yaml'
+        if not default_yaml_path.exists():
+            default_yaml_path = share_params_dir / 'robocup_waypoint.yaml'
+        default_yaml = str(default_yaml_path)
 
-        # ## 변경되는 부분
-        # A/B별 후진 거리, 회전 방향, 회전 각도, 전방 목표 거리를 읽을 YAML 기본 경로
+        # Deprecated: kept only so existing launch files with these
+        # parameters keep working. Rotation now comes from per-waypoint
+        # robocup_rotation_profiles.yaml.
         default_motion_profiles_yaml = str(
-            Path(get_package_share_directory('robocup_navigator'))
-            / 'params'
-            / 'nav_motion_profiles.yaml'
+            share_params_dir / 'nav_motion_profiles.yaml'
         )
+        default_rotation_profiles_path = (
+            source_params_dir / 'robocup_rotation_profiles.yaml'
+        )
+        if not default_rotation_profiles_path.exists():
+            default_rotation_profiles_path = (
+                share_params_dir / 'robocup_rotation_profiles.yaml'
+            )
+        default_rotation_profiles_yaml = str(default_rotation_profiles_path)
 
         self.declare_parameter('stations_file', default_yaml)
         self.declare_parameter('frame_id', 'map')
@@ -69,17 +89,20 @@ class RobocupNavigator(Node):
             '/robocup_navigator/post_process',
         )
 
-        # ## 변경되는 부분
-        # 실행 시 side_mode:=A 또는 side_mode:=B 로 선택
-        # motion_profiles_file은 params/nav_motion_profiles.yaml을 기본으로 사용
         self.declare_parameter('side_mode', 'A')
         self.declare_parameter(
             'motion_profiles_file',
             default_motion_profiles_yaml,
         )
+        self.declare_parameter(
+            'rotation_profiles_file',
+            default_rotation_profiles_yaml,
+        )
 
-        self.declare_parameter('follow_waypoints_action_name',
-                                'follow_waypoints')
+        self.declare_parameter(
+            'follow_waypoints_action_name',
+            'follow_waypoints',
+        )
         self.declare_parameter('follow_waypoints_server_timeout_sec', 10.0)
         self.declare_parameter('nav_result_timeout_sec', 120.0)
 
@@ -109,8 +132,9 @@ class RobocupNavigator(Node):
 
         self.declare_parameter('rotate_after_backup', True)
 
-        # ## 변경되는 부분
-        # rotate_direction: "left"면 왼쪽 회전, "right"면 오른쪽 회전
+        # Deprecated: direction/angle are ignored for runtime decisions.
+        # Keep declarations for launch compatibility; only angular speed and
+        # timeout still apply to per-waypoint rotations.
         self.declare_parameter('rotate_direction', 'left')
 
         self.declare_parameter('rotate_angle_deg', 150.0)
@@ -119,10 +143,6 @@ class RobocupNavigator(Node):
         self.declare_parameter('motion_period_sec', 0.05)
 
         self._load_parameters()
-
-        # ## 변경되는 부분
-        # 기본 파라미터를 먼저 읽은 뒤, A/B motion profile YAML 값으로 덮어씀
-        self._load_motion_profile_file()
 
         self._latest_front_distance: Optional[float] = None
         self._latest_scan_time = None
@@ -135,6 +155,7 @@ class RobocupNavigator(Node):
         self._waypoints_map, self._stations, self._frame_id = (
             self._load_station_file()
         )
+        self._rotation_profiles = self._load_rotation_profile_file()
 
         follow_action = self.get_parameter(
             'follow_waypoints_action_name'
@@ -246,8 +267,8 @@ class RobocupNavigator(Node):
             self.get_parameter('rotate_after_backup').value
         )
 
-        # ## 변경되는 부분
-        # 회전 방향 파라미터 추가. left면 angular.z 양수, right면 angular.z 음수로 사용
+        # Deprecated fallback parameters. Runtime direction/angle are now
+        # loaded per goal waypoint from robocup_rotation_profiles.yaml.
         self._rotate_direction = str(
             self.get_parameter('rotate_direction').value
         ).lower()
@@ -266,95 +287,82 @@ class RobocupNavigator(Node):
             self.get_parameter('motion_period_sec').value
         )
 
-    # ## 변경되는 부분
-    # stations_file을 읽는 방식과 동일하게, A/B motion profile YAML을 읽어서
-    # 후진 거리, 회전 방향, 회전 각도, 전방 목표 거리만 덮어쓴다.
-    def _load_motion_profile_file(self):
-        side_mode = str(self.get_parameter('side_mode').value).upper()
+    def _load_rotation_profile_file(self):
         path = Path(
-            str(self.get_parameter('motion_profiles_file').value)
+            str(self.get_parameter('rotation_profiles_file').value)
         ).expanduser()
 
         if not path.exists():
             self.get_logger().warn(
-                f'Motion profile file not found: {path}. '
-                'Using default motion parameters.'
+                f'Rotation profile file not found: {path}. '
+                'Goal rotations are disabled.'
             )
-            return
+            return {}
 
         try:
             with path.open('r', encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
         except Exception as exc:
             self.get_logger().error(
-                f'Failed to read motion profile file: {exc}. '
-                'Using default motion parameters.'
+                f'Failed to read rotation profile file: {exc}. '
+                'Goal rotations are disabled.'
             )
-            return
+            return {}
 
-        profiles = data.get('profiles', {}) if isinstance(data, dict) else {}
-        profile = profiles.get(side_mode)
-
-        if profile is None:
-            self.get_logger().warn(
-                f'Motion profile "{side_mode}" not found in {path}. '
-                'Using default motion parameters.'
-            )
-            return
-
-        try:
-            self._backup_distance = float(
-                profile.get('backup_distance', self._backup_distance)
-            )
-            self._backup_speed = float(
-                profile.get('backup_speed', self._backup_speed)
-            )
-
-            self._rotate_direction = str(
-                profile.get('rotate_direction', self._rotate_direction)
-            ).lower()
-
-            self._rotate_angle_deg = float(
-                profile.get('rotate_angle_deg', self._rotate_angle_deg)
-            )
-            self._rotate_angle_rad = math.radians(self._rotate_angle_deg)
-
-            self._rotate_angular_speed = float(
-                profile.get(
-                    'rotate_angular_speed',
-                    self._rotate_angular_speed,
-                )
-            )
-
-            self._target_front_distance = float(
-                profile.get(
-                    'target_front_distance',
-                    self._target_front_distance,
-                )
-            )
-
-            if self._rotate_direction not in ('left', 'right'):
+        raw_profiles = (
+            data.get('rotation_profiles', {})
+            if isinstance(data, dict)
+            else {}
+        )
+        profiles = {}
+        for waypoint_name, entry in raw_profiles.items():
+            if not self._is_goal_waypoint(waypoint_name):
                 self.get_logger().warn(
-                    f'Invalid rotate_direction="{self._rotate_direction}". '
-                    'Use "left" or "right". Fallback to "left".'
+                    f'Ignoring rotation profile for non-goal waypoint: '
+                    f'{waypoint_name}'
                 )
-                self._rotate_direction = 'left'
-
-            self.get_logger().info(
-                f'Loaded motion profile: side={side_mode}, '
-                f'backup_distance={self._backup_distance:.3f} m, '
-                f'backup_speed={self._backup_speed:.3f} m/s, '
-                f'rotate_direction={self._rotate_direction}, '
-                f'rotate_angle={self._rotate_angle_deg:.1f} deg, '
-                f'rotate_angular_speed={self._rotate_angular_speed:.3f} rad/s, '
-                f'target_front_distance={self._target_front_distance:.3f} m'
+                continue
+            if not isinstance(entry, dict):
+                self.get_logger().warn(
+                    f'Ignoring invalid rotation profile: {waypoint_name}'
+                )
+                continue
+            direction = str(entry.get('direction', '')).lower()
+            if direction not in ('clockwise', 'counterclockwise'):
+                self.get_logger().warn(
+                    f'Ignoring {waypoint_name}: invalid direction '
+                    f'"{direction}".'
+                )
+                continue
+            try:
+                angle_deg = float(entry.get('angle_deg', 0.0))
+            except (TypeError, ValueError):
+                self.get_logger().warn(
+                    f'Ignoring {waypoint_name}: invalid angle_deg.'
+                )
+                continue
+            if angle_deg <= 0.0:
+                self.get_logger().warn(
+                    f'Ignoring {waypoint_name}: angle_deg must be > 0.'
+                )
+                continue
+            profiles[waypoint_name] = RotationProfile(
+                waypoint_name,
+                direction,
+                angle_deg,
             )
 
-        except Exception as exc:
-            self.get_logger().error(
-                f'Invalid motion profile "{side_mode}": {exc}. '
-                'Using motion parameters loaded before profile override.'
-            )
+        self.get_logger().info(
+            f'Loaded waypoint rotation profiles: {len(profiles)} from {path}'
+        )
+        return profiles
+
+    def _is_goal_waypoint(self, waypoint_name: str):
+        return (
+            waypoint_name.startswith('station_')
+            and waypoint_name.endswith('_goal')
+            and not waypoint_name.endswith('_sub_goal')
+        )
 
     def _load_station_file(self):
         path = Path(
@@ -376,8 +384,12 @@ class RobocupNavigator(Node):
         if isinstance(data, dict) and data.get('frame_id'):
             frame_id = data['frame_id']
 
-        waypoints_map = data.get('waypoints', {}) if isinstance(data, dict) else {}
-        raw_stations = data.get('stations', {}) if isinstance(data, dict) else {}
+        waypoints_map = (
+            data.get('waypoints', {}) if isinstance(data, dict) else {}
+        )
+        raw_stations = (
+            data.get('stations', {}) if isinstance(data, dict) else {}
+        )
         stations = {}
 
         for raw_id, entry in raw_stations.items():
@@ -573,7 +585,9 @@ class RobocupNavigator(Node):
         if not self._follow_client.wait_for_server(
             timeout_sec=self._follow_server_timeout_sec
         ):
-            self.get_logger().error('FollowWaypoints action server unavailable.')
+            self.get_logger().error(
+                'FollowWaypoints action server unavailable.'
+            )
             return False, 'NAV_FAILED'
 
         self._publish_feedback(
@@ -720,11 +734,18 @@ class RobocupNavigator(Node):
                 return False, reason
 
         if self._rotate_after_backup:
-            ok, reason = self._run_rotation(None, profile)
+            waypoint_name = self._last_goal_waypoint(profile)
+            ok, reason = self._run_rotation(None, profile, waypoint_name)
             if not ok:
                 return False, reason
 
         return True, ''
+
+    def _last_goal_waypoint(self, profile: StationProfile):
+        for waypoint_name in reversed(profile.sequence):
+            if self._is_goal_waypoint(waypoint_name):
+                return waypoint_name
+        return None
 
     def _run_front_alignment(self, goal_handle, profile: StationProfile):
         self._publish_zero_velocity()
@@ -827,37 +848,53 @@ class RobocupNavigator(Node):
 
         return False, 'NAV_FAILED'
 
-    def _run_rotation(self, goal_handle, profile: StationProfile):
-        if self._rotate_angle_rad <= 0.0 or self._rotate_angular_speed <= 0.0:
-            self.get_logger().warn('Rotation skipped: invalid angle/speed.')
+    def _run_rotation(self, goal_handle, profile: StationProfile,
+                      waypoint_name: Optional[str]):
+        if not waypoint_name:
+            self.get_logger().info(
+                f'Rotation skipped: station={profile.station_id} has no '
+                'goal waypoint.'
+            )
+            return True, ''
+
+        rotation_profile = self._rotation_profiles.get(waypoint_name)
+        if rotation_profile is None:
+            self.get_logger().info(
+                f'Rotation skipped: no profile for waypoint={waypoint_name}.'
+            )
+            return True, ''
+
+        if (
+                rotation_profile.angle_rad <= 0.0
+                or self._rotate_angular_speed <= 0.0):
+            self.get_logger().warn(
+                f'Rotation skipped for {waypoint_name}: invalid angle/speed.'
+            )
             return True, ''
 
         required_time = (
-            abs(self._rotate_angle_rad) / abs(self._rotate_angular_speed)
+            abs(rotation_profile.angle_rad) / abs(self._rotate_angular_speed)
         )
         start = time.monotonic()
         self._publish_zero_velocity()
 
-        # ## 변경되는 부분
-        # YAML에서 읽은 rotate_direction에 따라 feedback/log 문구 변경
         direction_text = (
-            'ROTATING_RIGHT'
-            if self._rotate_direction == 'right'
-            else 'ROTATING_LEFT'
+            'ROTATING_CLOCKWISE'
+            if rotation_profile.direction == 'clockwise'
+            else 'ROTATING_COUNTERCLOCKWISE'
         )
 
         if goal_handle is not None:
             self._publish_feedback(
                 goal_handle,
                 f'{direction_text} station={profile.station_id} '
-                f'name={profile.name}',
+                f'name={profile.name} waypoint={waypoint_name}',
             )
 
-        # ## 변경되는 부분
-        # 회전 방향도 로그에 표시
         self.get_logger().info(
-            f'[ROTATE START] direction={self._rotate_direction}, '
-            f'angle={self._rotate_angle_deg:.1f} deg, '
+            f'[ROTATE START] waypoint={waypoint_name}, '
+            f'direction={rotation_profile.direction}, '
+            f'angle={rotation_profile.angle_deg:.1f} deg, '
             f'angular_speed={self._rotate_angular_speed:.3f} rad/s'
         )
 
@@ -879,10 +916,7 @@ class RobocupNavigator(Node):
 
             cmd = Twist()
 
-            # ## 변경되는 부분
-            # cmd.angular.z > 0 : 왼쪽 회전
-            # cmd.angular.z < 0 : 오른쪽 회전
-            if self._rotate_direction == 'right':
+            if rotation_profile.direction == 'clockwise':
                 cmd.angular.z = -abs(self._rotate_angular_speed)
             else:
                 cmd.angular.z = abs(self._rotate_angular_speed)

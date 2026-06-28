@@ -15,7 +15,7 @@ MATERIAL_NAMES = {
 }
 
 PRODUCT_SLOT = 1
-MATERIAL_SLOTS = [2, 3, 4, 5, 6, 7]
+MATERIAL_SLOTS = [2, 3, 4, 5, 6]
 ASSEMBLY_SLOT = 8  # 조립 완료된 완성품이 놓이는 슬롯 (FIND_EMPTY 검색 대상 아님)
 
 

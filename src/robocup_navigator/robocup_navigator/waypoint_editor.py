@@ -22,6 +22,12 @@ DEFAULT_WAYPOINTS_PATH = (
     Path.home()
     / 'ros2_ws/src/robocup_navigator/params/robocup_waypoint.yaml'
 )
+DEFAULT_ROTATION_PROFILES_PATH = (
+    Path.home()
+    / 'ros2_ws/src/robocup_navigator/params/robocup_rotation_profiles.yaml'
+)
+DEFAULT_BACKUP_DISTANCE = 0.20
+DEFAULT_ROTATE_ANGULAR_SPEED = 1.4
 
 
 @dataclass
@@ -47,6 +53,12 @@ def load_yaml(path: Path) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f'{path} must contain a YAML mapping.')
     return data
+
+
+def load_optional_yaml(path: Path, default: dict) -> dict:
+    if not path.exists():
+        return copy.deepcopy(default)
+    return load_yaml(path)
 
 
 def load_map(map_yaml_path: Path) -> MapInfo:
@@ -139,17 +151,23 @@ def station_key_sort(value):
 
 class WaypointEditor:
     def __init__(self, root: tk.Tk, map_info: MapInfo,
-                 waypoints_path: Path):
+                 waypoints_path: Path, rotation_profiles_path: Path):
         self.root = root
         self.map_info = map_info
         self.waypoints_path = waypoints_path
+        self.rotation_profiles_path = rotation_profiles_path
         self.data = load_yaml(waypoints_path)
+        self.rotation_data = load_optional_yaml(
+            rotation_profiles_path,
+            {'rotation_profiles': {}},
+        )
         self.original_data = copy.deepcopy(self.data)
 
         self.data.setdefault('waypoints', {})
         self.data.setdefault('sequence', [])
         self.data.setdefault('stations', {})
         self.data.setdefault('frame_id', 'map')
+        self.rotation_data.setdefault('rotation_profiles', {})
 
         self.zoom = 2.0
         self.selected_name: Optional[str] = None
@@ -186,10 +204,32 @@ class WaypointEditor:
         self.robot_size_y_var = tk.StringVar(value='0.600')
         self.robot_offset_x_var = tk.StringVar(value='0.00')
         self.robot_offset_y_var = tk.StringVar(value='0.00')
+        self.rotation_enabled_var = tk.BooleanVar(value=False)
+        self.rotation_direction_var = tk.StringVar(value='counterclockwise')
+        self.rotation_angle_var = tk.StringVar(value='150.0')
+        self.rotation_mouse_adjust_var = tk.BooleanVar(value=False)
+        self.rotation_motion_preview_var = tk.BooleanVar(value=False)
+        self.rotation_target_var = tk.StringVar(value='Target: select goal')
+        self.rotation_manual_hint_var = tk.StringVar(
+            value='Manual values need Set'
+        )
+        self.rotation_motion_info_var = tk.StringVar(
+            value='backup 0.20 m | rotate -- s | R 0.00 m'
+        )
+        self.rotation_backup_distance_var = tk.StringVar(
+            value=f'{DEFAULT_BACKUP_DISTANCE:.2f}'
+        )
+        self.rotation_angular_speed_var = tk.StringVar(
+            value=f'{DEFAULT_ROTATE_ANGULAR_SPEED:.1f}'
+        )
+        self.rotation_mouse_adjusting = False
+        self.rotation_controls = []
 
         self.root.title('Robocup Waypoint Editor')
         self._build_ui()
         self._bind_events()
+        self._bind_rotation_preview_updates()
+        self._populate_rotation_fields('')
         self._refresh_image()
         self._refresh_waypoint_list()
         self._draw_overlays()
@@ -483,22 +523,107 @@ class WaypointEditor:
             text='Auto next station',
             variable=self.diff_auto_next_var,
         ).pack(anchor=tk.W, pady=(4, 0))
-        ttk.Label(
-            diff_box,
-            text=(
-                'Turn on this toggle,\n'
-                'then drag:\n\n'
-                'start: station_N_sub_goal\n'
-                'end: station_N_goal\n'
-                'yaw: start -> end'
-            ),
-            justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=(8, 0))
         ttk.Button(
             diff_box,
             text='Clear Preview',
             command=self._clear_diff_preview,
-        ).pack(fill=tk.X, pady=(8, 0))
+        ).pack(fill=tk.X, pady=(6, 0))
+
+        rotation_box = ttk.LabelFrame(parent, text='Rotation', padding=8)
+        rotation_box.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(
+            rotation_box,
+            textvariable=self.rotation_target_var,
+        ).pack(anchor=tk.W, pady=(0, 4))
+        self.rotation_enable_check = ttk.Checkbutton(
+            rotation_box,
+            text='Use rotation',
+            variable=self.rotation_enabled_var,
+        )
+        self.rotation_enable_check.pack(anchor=tk.W)
+        self.rotation_mouse_check = ttk.Checkbutton(
+            rotation_box,
+            text='Drag to set angle',
+            variable=self.rotation_mouse_adjust_var,
+            command=self._on_rotation_mouse_toggle_changed,
+        )
+        self.rotation_mouse_check.pack(anchor=tk.W, pady=(4, 0))
+        self.rotation_motion_check = ttk.Checkbutton(
+            rotation_box,
+            text='Show backup + turn path',
+            variable=self.rotation_motion_preview_var,
+            command=self._draw_overlays,
+        )
+        self.rotation_motion_check.pack(anchor=tk.W, pady=(4, 0))
+        self._rotation_angle_row(rotation_box)
+        ttk.Label(
+            rotation_box,
+            text='Direction',
+        ).pack(anchor=tk.W, pady=(4, 2))
+        self.rotation_direction_combo = ttk.Combobox(
+            rotation_box,
+            textvariable=self.rotation_direction_var,
+            values=('clockwise', 'counterclockwise'),
+            state='readonly',
+            width=18,
+        )
+        self.rotation_direction_combo.pack(fill=tk.X)
+        ttk.Label(
+            rotation_box,
+            textvariable=self.rotation_manual_hint_var,
+            foreground='#555555',
+        ).pack(anchor=tk.W, pady=(4, 0))
+        self._right_entry_row(
+            rotation_box,
+            'Backup m',
+            self.rotation_backup_distance_var,
+        )
+        self._right_entry_row(
+            rotation_box,
+            'Speed rad/s',
+            self.rotation_angular_speed_var,
+        )
+        ttk.Label(
+            rotation_box,
+            textvariable=self.rotation_motion_info_var,
+            foreground='#555555',
+            wraplength=170,
+        ).pack(anchor=tk.W, pady=(4, 0))
+        rotation_buttons = ttk.Frame(rotation_box)
+        rotation_buttons.pack(fill=tk.X, pady=(6, 0))
+        rotation_buttons.columnconfigure(0, weight=1)
+        rotation_buttons.columnconfigure(1, weight=1)
+        self.rotation_apply_button = ttk.Button(
+            rotation_buttons,
+            text='Set Manual',
+            command=self.apply_rotation_profile,
+        )
+        self.rotation_apply_button.grid(
+            row=0,
+            column=0,
+            sticky=tk.EW,
+            padx=(0, 3),
+        )
+        self.rotation_clear_button = ttk.Button(
+            rotation_buttons,
+            text='Remove',
+            command=self.clear_rotation_profile,
+        )
+        self.rotation_clear_button.grid(
+            row=0,
+            column=1,
+            sticky=tk.EW,
+            padx=(3, 0),
+        )
+        self.rotation_controls = [
+            self.rotation_enable_check,
+            self.rotation_mouse_check,
+            self.rotation_motion_check,
+            self.rotation_angle_spinbox,
+            self.rotation_direction_combo,
+            self.rotation_apply_button,
+            self.rotation_clear_button,
+        ]
 
         robot_box = ttk.LabelFrame(parent, text='Robot Preview', padding=8)
         robot_box.pack(fill=tk.X, pady=(8, 0))
@@ -570,6 +695,21 @@ class WaypointEditor:
         ttk.Label(row, text=label).pack(side=tk.LEFT)
         ttk.Entry(row, textvariable=variable, width=8).pack(side=tk.RIGHT)
 
+    def _rotation_angle_row(self, parent):
+        row = ttk.Frame(parent)
+        row.pack(fill=tk.X, pady=2)
+        ttk.Label(row, text='Angle deg').pack(side=tk.LEFT)
+        self.rotation_angle_spinbox = ttk.Spinbox(
+            row,
+            from_=1.0,
+            to=360.0,
+            increment=5.0,
+            textvariable=self.rotation_angle_var,
+            width=8,
+            command=self._on_rotation_manual_changed,
+        )
+        self.rotation_angle_spinbox.pack(side=tk.RIGHT)
+
     def _entry_row(self, parent, label: str, variable: tk.StringVar, row: int):
         ttk.Label(
             parent,
@@ -597,6 +737,14 @@ class WaypointEditor:
             '<<ComboboxSelected>>',
             lambda _event: self._draw_overlays(),
         )
+        self.rotation_angle_spinbox.bind(
+            '<Return>',
+            lambda _event: self.apply_rotation_profile(),
+        )
+        self.rotation_direction_combo.bind(
+            '<<ComboboxSelected>>',
+            lambda _event: self._on_rotation_manual_changed(),
+        )
         self.root.bind('<Control-s>', lambda _event: self.save())
         self.root.bind('<Control-z>', lambda _event: self.undo())
         self.root.bind('<Control-Z>', lambda _event: self.redo())
@@ -618,6 +766,22 @@ class WaypointEditor:
         self.root.bind('<Alt-q>', lambda _event: self._rotate_selected(5.0))
         self.root.bind('<Alt-e>', lambda _event: self._rotate_selected(-5.0))
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
+
+    def _bind_rotation_preview_updates(self):
+        variables = (
+            self.rotation_angle_var,
+            self.rotation_backup_distance_var,
+            self.rotation_angular_speed_var,
+            self.robot_size_x_var,
+            self.robot_size_y_var,
+            self.robot_offset_x_var,
+            self.robot_offset_y_var,
+        )
+        for variable in variables:
+            variable.trace_add(
+                'write',
+                lambda *_args: self._on_rotation_preview_input_changed(),
+            )
 
     def _refresh_image(self):
         width = max(1, int(self.map_info.width * self.zoom))
@@ -687,9 +851,13 @@ class WaypointEditor:
         self.canvas.delete('measure')
         self.canvas.delete('diff_preview')
         self.canvas.delete('robot_preview')
+        self.canvas.delete('rotation_preview')
+        self.canvas.delete('departure_preview')
         self._draw_grid()
         self._draw_sequence()
         self._draw_robot_previews()
+        self._draw_rotation_previews()
+        self._draw_departure_motion_previews()
         for name in self._ordered_waypoint_names():
             self._draw_waypoint(name)
         self._draw_measurement()
@@ -968,6 +1136,292 @@ class WaypointEditor:
             base_y + sin_yaw * local_x + cos_yaw * local_y,
         )
 
+    @property
+    def rotation_profiles(self) -> Dict[str, dict]:
+        return self.rotation_data.setdefault('rotation_profiles', {})
+
+    def _is_rotation_goal(self, name: Optional[str]) -> bool:
+        if not name:
+            return False
+        match = STATION_WAYPOINT_RE.match(name)
+        return bool(match and not match.group(2))
+
+    def _draw_rotation_previews(self):
+        for name, profile in self.rotation_profiles.items():
+            if not self._is_rotation_goal(name):
+                continue
+            if name not in self.waypoints:
+                continue
+            direction = str(profile.get('direction', '')).lower()
+            if direction not in ('clockwise', 'counterclockwise'):
+                continue
+            try:
+                angle_deg = float(profile.get('angle_deg', 0.0))
+            except (TypeError, ValueError):
+                continue
+            if angle_deg <= 0.0:
+                continue
+            x, y, yaw = waypoint_xy_yaw(self.waypoints[name])
+            self._draw_rotation_arc(name, x, y, yaw, direction, angle_deg)
+
+    def _draw_rotation_arc(self, name: str, x: float, y: float, yaw: float,
+                           direction: str, angle_deg: float):
+        radius = 0.45
+        sign = -1.0 if direction == 'clockwise' else 1.0
+        steps = max(8, int(abs(angle_deg) / 10.0))
+        points = []
+        for index in range(steps + 1):
+            frac = index / steps
+            angle = yaw + sign * math.radians(angle_deg) * frac
+            px = x + math.cos(angle) * radius
+            py = y + math.sin(angle) * radius
+            points.extend(self.map_to_canvas(px, py))
+
+        color = '#d35400' if direction == 'clockwise' else '#16a085'
+        self.canvas.create_line(
+            *points,
+            fill=color,
+            width=3,
+            arrow=tk.LAST,
+            smooth=True,
+            tags=('rotation_preview',),
+        )
+        label_x = x + math.cos(yaw) * (radius + 0.12)
+        label_y = y + math.sin(yaw) * (radius + 0.12)
+        cx, cy = self.map_to_canvas(label_x, label_y)
+        short_direction = 'CW' if direction == 'clockwise' else 'CCW'
+        self.canvas.create_text(
+            cx,
+            cy,
+            text=f'{short_direction} {angle_deg:.0f} deg',
+            anchor=tk.CENTER,
+            fill=color,
+            font=('TkDefaultFont', 9, 'bold'),
+            tags=('rotation_preview',),
+        )
+
+    def _draw_departure_motion_previews(self):
+        if not self.rotation_motion_preview_var.get():
+            return
+
+        name = self.selected_name
+        if not self._is_rotation_goal(name) or name not in self.waypoints:
+            return
+
+        profile = self.rotation_profiles.get(name)
+        if not profile:
+            return
+
+        try:
+            angle_deg = float(profile.get('angle_deg', 0.0))
+            backup_distance = float(self.rotation_backup_distance_var.get())
+            angular_speed = float(self.rotation_angular_speed_var.get())
+            size_x = max(0.01, float(self.robot_size_x_var.get()))
+            size_y = max(0.01, float(self.robot_size_y_var.get()))
+            offset_x = float(self.robot_offset_x_var.get())
+            offset_y = float(self.robot_offset_y_var.get())
+        except (TypeError, ValueError):
+            self._set_status(
+                'Departure preview ignored: values must be numeric.'
+            )
+            return
+
+        direction = str(profile.get('direction', '')).lower()
+        if direction not in ('clockwise', 'counterclockwise'):
+            return
+        if angle_deg <= 0.0 or backup_distance < 0.0:
+            return
+
+        x, y, yaw = waypoint_xy_yaw(self.waypoints[name])
+        backup_x = x - math.cos(yaw) * backup_distance
+        backup_y = y - math.sin(yaw) * backup_distance
+        footprint_radius = self._footprint_swept_radius(
+            size_x,
+            size_y,
+            offset_x,
+            offset_y,
+        )
+        rotate_time = self._rotation_time(angle_deg, angular_speed)
+
+        self._draw_backup_segment(x, y, backup_x, backup_y)
+        self._draw_robot_footprint_at(
+            backup_x,
+            backup_y,
+            yaw,
+            size_x,
+            size_y,
+            offset_x,
+            offset_y,
+            '#c0392b',
+            'departure_preview',
+        )
+        self._draw_radius_circle(
+            backup_x,
+            backup_y,
+            footprint_radius,
+            '#c0392b',
+            'departure_preview',
+        )
+        self._draw_departure_rotation_arc(
+            backup_x,
+            backup_y,
+            yaw,
+            direction,
+            angle_deg,
+            max(footprint_radius, 0.20),
+        )
+        self._draw_departure_label(
+            backup_x,
+            backup_y,
+            backup_distance,
+            rotate_time,
+            footprint_radius,
+        )
+
+    def _draw_backup_segment(self, x: float, y: float,
+                             backup_x: float, backup_y: float):
+        x1, y1 = self.map_to_canvas(x, y)
+        x2, y2 = self.map_to_canvas(backup_x, backup_y)
+        self.canvas.create_line(
+            x1,
+            y1,
+            x2,
+            y2,
+            fill='#c0392b',
+            width=3,
+            dash=(5, 3),
+            arrow=tk.LAST,
+            tags=('departure_preview',),
+        )
+        for cx, cy, label in ((x1, y1, 'goal'), (x2, y2, 'backup')):
+            self.canvas.create_oval(
+                cx - 4,
+                cy - 4,
+                cx + 4,
+                cy + 4,
+                fill='#ffffff',
+                outline='#c0392b',
+                width=2,
+                tags=('departure_preview',),
+            )
+            self.canvas.create_text(
+                cx + 6,
+                cy + 6,
+                text=label,
+                anchor=tk.NW,
+                fill='#c0392b',
+                font=('TkDefaultFont', 8, 'bold'),
+                tags=('departure_preview',),
+            )
+
+    def _draw_robot_footprint_at(self, x: float, y: float, yaw: float,
+                                 size_x: float, size_y: float,
+                                 offset_x: float, offset_y: float,
+                                 color: str, tag: str):
+        center_x, center_y = self._local_to_map(x, y, yaw, offset_x, offset_y)
+        local_corners = (
+            (size_x / 2.0, size_y / 2.0),
+            (size_x / 2.0, -size_y / 2.0),
+            (-size_x / 2.0, -size_y / 2.0),
+            (-size_x / 2.0, size_y / 2.0),
+        )
+        points = []
+        for local_x, local_y in local_corners:
+            corner = self._local_to_map(
+                center_x,
+                center_y,
+                yaw,
+                local_x,
+                local_y,
+            )
+            points.extend(self.map_to_canvas(corner[0], corner[1]))
+        self.canvas.create_polygon(
+            *points,
+            fill='',
+            outline=color,
+            width=2,
+            dash=(4, 3),
+            tags=(tag,),
+        )
+
+    def _draw_radius_circle(self, x: float, y: float, radius: float,
+                            color: str, tag: str):
+        if radius <= 0.0:
+            return
+        points = []
+        steps = 72
+        for index in range(steps + 1):
+            angle = 2.0 * math.pi * index / steps
+            px = x + math.cos(angle) * radius
+            py = y + math.sin(angle) * radius
+            points.extend(self.map_to_canvas(px, py))
+        self.canvas.create_line(
+            *points,
+            fill=color,
+            width=1,
+            dash=(2, 4),
+            tags=(tag,),
+        )
+
+    def _draw_departure_rotation_arc(self, x: float, y: float, yaw: float,
+                                     direction: str, angle_deg: float,
+                                     radius: float):
+        sign = -1.0 if direction == 'clockwise' else 1.0
+        steps = max(8, int(abs(angle_deg) / 10.0))
+        points = []
+        for index in range(steps + 1):
+            frac = index / steps
+            angle = yaw + sign * math.radians(angle_deg) * frac
+            px = x + math.cos(angle) * radius
+            py = y + math.sin(angle) * radius
+            points.extend(self.map_to_canvas(px, py))
+        self.canvas.create_line(
+            *points,
+            fill='#c0392b',
+            width=3,
+            arrow=tk.LAST,
+            smooth=True,
+            tags=('departure_preview',),
+        )
+
+    def _draw_departure_label(self, x: float, y: float,
+                              backup_distance: float,
+                              rotate_time: Optional[float],
+                              footprint_radius: float):
+        cx, cy = self.map_to_canvas(x, y)
+        rotate_text = '--' if rotate_time is None else f'{rotate_time:.2f}'
+        text = (
+            f'backup {backup_distance:.2f} m\n'
+            f'rotate {rotate_text} s\n'
+            f'center R 0.00 m\n'
+            f'footprint R {footprint_radius:.2f} m'
+        )
+        self.canvas.create_text(
+            cx + 12,
+            cy - 12,
+            text=text,
+            anchor=tk.SW,
+            fill='#c0392b',
+            font=('TkDefaultFont', 8, 'bold'),
+            tags=('departure_preview',),
+        )
+
+    def _footprint_swept_radius(self, size_x: float, size_y: float,
+                                offset_x: float, offset_y: float) -> float:
+        corners = (
+            (offset_x + size_x / 2.0, offset_y + size_y / 2.0),
+            (offset_x + size_x / 2.0, offset_y - size_y / 2.0),
+            (offset_x - size_x / 2.0, offset_y - size_y / 2.0),
+            (offset_x - size_x / 2.0, offset_y + size_y / 2.0),
+        )
+        return max(math.hypot(x, y) for x, y in corners)
+
+    def _rotation_time(self, angle_deg: float,
+                       angular_speed: float) -> Optional[float]:
+        if angular_speed <= 0.0:
+            return None
+        return abs(math.radians(angle_deg)) / abs(angular_speed)
+
     def _draw_measurement(self):
         if not self.measure_start_map or not self.measure_end_map:
             return
@@ -1150,6 +1604,7 @@ class WaypointEditor:
         self.y_var.set(f'{y:.6f}')
         self.yaw_var.set(f'{normalize_degrees(math.degrees(yaw)):.3f}')
         self._populate_station_fields(name)
+        self._populate_rotation_fields(name)
         self._refresh_waypoint_list()
         self._draw_overlays()
         self._set_status(f'Selected {name}.')
@@ -1165,6 +1620,222 @@ class WaypointEditor:
         if station is None:
             station = self.stations.get(match.group(1), {})
         self.post_process_var.set(bool(station.get('post_process', True)))
+
+    def _populate_rotation_fields(self, name: str):
+        profile = self.rotation_profiles.get(name, {})
+        valid_goal = self._is_rotation_goal(name)
+        self.rotation_enabled_var.set(valid_goal and bool(profile))
+        self.rotation_direction_var.set(
+            str(profile.get('direction', 'counterclockwise')).lower()
+        )
+        self.rotation_angle_var.set(str(profile.get('angle_deg', 150.0)))
+        if valid_goal:
+            state = 'ON' if bool(profile) else 'READY'
+            self.rotation_target_var.set(f'Target: {name} ({state})')
+            self.rotation_manual_hint_var.set('Typed values need Set Manual')
+        else:
+            self.rotation_target_var.set('Target: select station_N_goal')
+            self.rotation_mouse_adjust_var.set(False)
+            self.rotation_motion_preview_var.set(False)
+            self.rotation_manual_hint_var.set('Goal only')
+        self._set_rotation_controls_enabled(valid_goal)
+        self._update_rotation_motion_info(name)
+        self._update_canvas_cursor()
+
+    def _set_rotation_controls_enabled(self, enabled: bool):
+        state = tk.NORMAL if enabled else tk.DISABLED
+        for widget in self.rotation_controls:
+            if widget is self.rotation_direction_combo and enabled:
+                widget.configure(state='readonly')
+            else:
+                widget.configure(state=state)
+
+    def _on_rotation_manual_changed(self):
+        if self._is_rotation_goal(self.selected_name):
+            self.rotation_manual_hint_var.set('Typed values need Set Manual')
+            self._update_rotation_motion_info(self.selected_name)
+            self._draw_overlays()
+
+    def _on_rotation_preview_input_changed(self):
+        self._update_rotation_motion_info(self.selected_name)
+        if (
+            hasattr(self, 'canvas')
+            and self.rotation_motion_preview_var.get()
+        ):
+            self._draw_overlays()
+
+    def _update_rotation_motion_info(self, name: Optional[str]):
+        if not self._is_rotation_goal(name):
+            self.rotation_motion_info_var.set(
+                'backup 0.20 m | rotate -- s | R 0.00 m'
+            )
+            return
+
+        try:
+            profile = self.rotation_profiles.get(name, {})
+            angle_deg = float(profile.get('angle_deg',
+                                          self.rotation_angle_var.get()))
+            backup_distance = float(self.rotation_backup_distance_var.get())
+            angular_speed = float(self.rotation_angular_speed_var.get())
+            size_x = max(0.01, float(self.robot_size_x_var.get()))
+            size_y = max(0.01, float(self.robot_size_y_var.get()))
+            offset_x = float(self.robot_offset_x_var.get())
+            offset_y = float(self.robot_offset_y_var.get())
+        except (TypeError, ValueError):
+            self.rotation_motion_info_var.set('invalid preview values')
+            return
+
+        rotate_time = self._rotation_time(angle_deg, angular_speed)
+        rotate_text = '--' if rotate_time is None else f'{rotate_time:.2f}'
+        footprint_radius = self._footprint_swept_radius(
+            size_x,
+            size_y,
+            offset_x,
+            offset_y,
+        )
+        self.rotation_motion_info_var.set(
+            f'backup {backup_distance:.2f} m | '
+            f'rotate {rotate_text} s | '
+            f'center R 0.00 m | footprint R {footprint_radius:.2f} m'
+        )
+
+    def apply_rotation_profile(self):
+        name = self.selected_name
+        if not self._is_rotation_goal(name):
+            messagebox.showinfo(
+                'Rotation ignored',
+                'Rotation profiles are only applied to station_N_goal points.',
+            )
+            return
+
+        if not self.rotation_enabled_var.get():
+            self.clear_rotation_profile()
+            return
+
+        direction = self.rotation_direction_var.get().lower()
+        if direction not in ('clockwise', 'counterclockwise'):
+            messagebox.showerror(
+                'Invalid rotation',
+                'Direction must be clockwise or counterclockwise.',
+            )
+            return
+        try:
+            angle_deg = float(self.rotation_angle_var.get())
+        except ValueError:
+            messagebox.showerror('Invalid rotation', 'Angle must be numeric.')
+            return
+        if angle_deg <= 0.0:
+            messagebox.showerror('Invalid rotation', 'Angle must be > 0.')
+            return
+
+        self._push_undo()
+        self.rotation_profiles[name] = {
+            'direction': direction,
+            'angle_deg': round(angle_deg, 3),
+        }
+        self.mark_dirty()
+        self._draw_overlays()
+        self._set_status(
+            f'Rotation set for {name}: {direction}, {angle_deg:.1f} deg.'
+        )
+        self._populate_rotation_fields(name)
+
+    def clear_rotation_profile(self):
+        name = self.selected_name
+        if not self._is_rotation_goal(name):
+            self.rotation_enabled_var.set(False)
+            return
+        if name not in self.rotation_profiles:
+            self.rotation_enabled_var.set(False)
+            self._draw_overlays()
+            return
+        self._push_undo()
+        self.rotation_profiles.pop(name, None)
+        self.rotation_enabled_var.set(False)
+        self.mark_dirty()
+        self._draw_overlays()
+        self._set_status(f'Rotation cleared for {name}.')
+        self._populate_rotation_fields(name)
+
+    def _on_rotation_mouse_toggle_changed(self):
+        if self.rotation_mouse_adjust_var.get():
+            self._set_status(
+                'Rotation mouse adjust on: drag from selected goal to set arc.'
+            )
+        else:
+            self.rotation_mouse_adjusting = False
+            self._set_status('Rotation mouse adjust off.')
+        self._update_canvas_cursor()
+
+    def _start_rotation_mouse_adjust(self, event):
+        name = self._rotation_mouse_target(event)
+        if not name:
+            self.rotation_mouse_adjusting = False
+            self._set_status(
+                'Select a station_N_goal before using rotation mouse adjust.'
+            )
+            return
+
+        if name != self.selected_name:
+            self.select_waypoint(name)
+
+        self._push_undo()
+        self.rotation_mouse_adjusting = True
+        self._update_rotation_from_mouse(event)
+
+    def _update_rotation_from_mouse(self, event):
+        name = self.selected_name
+        if (
+            not self.rotation_mouse_adjusting
+            or not self._is_rotation_goal(name)
+        ):
+            return
+        if name not in self.waypoints:
+            return
+
+        x, y, yaw = waypoint_xy_yaw(self.waypoints[name])
+        mouse_x, mouse_y = self._event_to_map(event)
+        dx = mouse_x - x
+        dy = mouse_y - y
+        if math.hypot(dx, dy) < 0.03:
+            return
+
+        target_yaw = math.atan2(dy, dx)
+        delta_deg = normalize_degrees(math.degrees(target_yaw - yaw))
+        direction = 'counterclockwise' if delta_deg >= 0.0 else 'clockwise'
+        angle_deg = abs(delta_deg)
+
+        self.rotation_enabled_var.set(True)
+        self.rotation_direction_var.set(direction)
+        self.rotation_angle_var.set(f'{angle_deg:.1f}')
+        self.rotation_profiles[name] = {
+            'direction': direction,
+            'angle_deg': round(angle_deg, 3),
+        }
+        self.rotation_target_var.set(f'Target: {name} (ON)')
+        self.rotation_manual_hint_var.set('Mouse drag already recorded')
+        self.mark_dirty()
+        self._draw_overlays()
+        self._set_status(
+            f'Rotation set for {name}: {direction}, {angle_deg:.1f} deg.'
+        )
+
+    def _finish_rotation_mouse_adjust(self, event):
+        if self.rotation_mouse_adjusting:
+            self._update_rotation_from_mouse(event)
+        self.rotation_mouse_adjusting = False
+        if self._is_rotation_goal(self.selected_name):
+            self.rotation_manual_hint_var.set('Mouse drag recorded; use Save')
+
+    def _rotation_mouse_target(self, event) -> Optional[str]:
+        if self._is_rotation_goal(self.selected_name):
+            return self.selected_name
+
+        x, y = self._event_to_map(event)
+        nearest = self._nearest_waypoint(x, y)
+        if self._is_rotation_goal(nearest):
+            return nearest
+        return None
 
     def new_station_waypoint(self):
         try:
@@ -1316,6 +1987,10 @@ class WaypointEditor:
 
     def _rename_waypoint(self, old_name: str, new_name: str):
         self.waypoints[new_name] = self.waypoints.pop(old_name)
+        if old_name in self.rotation_profiles:
+            self.rotation_profiles[new_name] = self.rotation_profiles.pop(
+                old_name
+            )
         self._replace_references(self.sequence, old_name, new_name)
         for station in self.stations.values():
             if isinstance(station, dict):
@@ -1395,6 +2070,7 @@ class WaypointEditor:
             return
         self._push_undo()
         self.waypoints.pop(name, None)
+        self.rotation_profiles.pop(name, None)
         self.data['sequence'] = [
             item for item in self.sequence if item != name
         ]
@@ -1409,6 +2085,7 @@ class WaypointEditor:
         self.x_var.set('')
         self.y_var.set('')
         self.yaw_var.set('')
+        self._populate_rotation_fields('')
         self.mark_dirty()
         self._refresh_waypoint_list()
         self._draw_overlays()
@@ -1418,6 +2095,9 @@ class WaypointEditor:
         mode = self._active_mode()
         if mode == 'drag':
             self.canvas.scan_mark(event.x, event.y)
+            return
+        if mode == 'rotation':
+            self._start_rotation_mouse_adjust(event)
             return
         if mode == 'diff':
             self.diff_start_map = self._event_to_map(event, snap=True)
@@ -1450,6 +2130,9 @@ class WaypointEditor:
         if mode == 'drag':
             self.canvas.scan_dragto(event.x, event.y, gain=1)
             return
+        if mode == 'rotation':
+            self._update_rotation_from_mouse(event)
+            return
         if mode == 'diff':
             if not self.diff_start_map:
                 return
@@ -1481,6 +2164,9 @@ class WaypointEditor:
     def _on_left_release(self, event):
         mode = self._active_mode()
         if mode == 'drag':
+            return
+        if mode == 'rotation':
+            self._finish_rotation_mouse_adjust(event)
             return
         if mode == 'diff':
             if self.diff_start_map:
@@ -1535,6 +2221,7 @@ class WaypointEditor:
             self._set_status('Drag mode: left drag pans the map.')
         else:
             self._set_status('Edit mode: left click/drag edits waypoints.')
+        self._update_canvas_cursor()
 
     def _ensure_selected_for_canvas(self) -> Optional[str]:
         if self.selected_name in self.waypoints:
@@ -1568,9 +2255,25 @@ class WaypointEditor:
         self._set_status('Measurement cleared.')
 
     def _active_mode(self) -> str:
+        if self.rotation_mouse_adjust_var.get():
+            return 'rotation'
         if self.diff_toggle_var.get():
             return 'diff'
         return self.mode_var.get()
+
+    def _update_canvas_cursor(self):
+        if not hasattr(self, 'canvas'):
+            return
+        mode = self._active_mode()
+        if mode == 'rotation':
+            cursor = 'crosshair'
+        elif mode == 'drag':
+            cursor = 'fleur'
+        elif mode == 'measure':
+            cursor = 'tcross'
+        else:
+            cursor = ''
+        self.canvas.configure(cursor=cursor)
 
     def _on_diff_toggle_changed(self):
         if self.diff_toggle_var.get():
@@ -1846,6 +2549,7 @@ class WaypointEditor:
 
         self.data = output
         self.original_data = copy.deepcopy(output)
+        self._save_rotation_profiles()
         self.dirty = False
         self.redo_stack.clear()
         self._refresh_waypoint_list()
@@ -1881,6 +2585,43 @@ class WaypointEditor:
         output['stations'] = stations
         return output
 
+    def _save_rotation_profiles(self):
+        profiles = {}
+        for name, profile in self.rotation_profiles.items():
+            if not self._is_rotation_goal(name):
+                continue
+            if name not in self.waypoints:
+                continue
+            direction = str(profile.get('direction', '')).lower()
+            if direction not in ('clockwise', 'counterclockwise'):
+                continue
+            try:
+                angle_deg = float(profile.get('angle_deg', 0.0))
+            except (TypeError, ValueError):
+                continue
+            if angle_deg <= 0.0:
+                continue
+            profiles[name] = {
+                'direction': direction,
+                'angle_deg': round(angle_deg, 3),
+            }
+        output = {'rotation_profiles': profiles}
+        if self.rotation_profiles_path.exists():
+            stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            backup_path = self.rotation_profiles_path.with_suffix(
+                self.rotation_profiles_path.suffix + f'.bak-{stamp}'
+            )
+            shutil.copy2(self.rotation_profiles_path, backup_path)
+        with self.rotation_profiles_path.open('w', encoding='utf-8') as stream:
+            yaml.safe_dump(
+                output,
+                stream,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+        self.rotation_data = output
+
     def _unique_existing(self, names: Iterable[str]) -> List[str]:
         result = []
         for name in names:
@@ -1894,13 +2635,23 @@ class WaypointEditor:
                 'Discard unsaved waypoint changes and reload from disk?'):
             return
         self.data = load_yaml(self.waypoints_path)
+        self.rotation_data = load_optional_yaml(
+            self.rotation_profiles_path,
+            {'rotation_profiles': {}},
+        )
         self.data.setdefault('waypoints', {})
         self.data.setdefault('sequence', [])
         self.data.setdefault('stations', {})
         self.data.setdefault('frame_id', 'map')
+        self.rotation_data.setdefault('rotation_profiles', {})
         self.original_data = copy.deepcopy(self.data)
         self.frame_id_var.set(str(self.data['frame_id']))
         self.selected_name = None
+        self.name_var.set('')
+        self.x_var.set('')
+        self.y_var.set('')
+        self.yaw_var.set('')
+        self._populate_rotation_fields('')
         self.dirty = False
         self.undo_stack.clear()
         self.redo_stack.clear()
@@ -1915,6 +2666,7 @@ class WaypointEditor:
     def _snapshot_state(self) -> dict:
         return {
             'data': copy.deepcopy(self.data),
+            'rotation_data': copy.deepcopy(self.rotation_data),
             'selected_name': self.selected_name,
             'frame_id': self.frame_id_var.get(),
             'station_id': self.station_id_var.get(),
@@ -1924,10 +2676,14 @@ class WaypointEditor:
 
     def _restore_state(self, state: dict):
         self.data = copy.deepcopy(state['data'])
+        self.rotation_data = copy.deepcopy(
+            state.get('rotation_data', {'rotation_profiles': {}})
+        )
         self.data.setdefault('waypoints', {})
         self.data.setdefault('sequence', [])
         self.data.setdefault('stations', {})
         self.data.setdefault('frame_id', 'map')
+        self.rotation_data.setdefault('rotation_profiles', {})
         self.selected_name = state.get('selected_name')
         self.frame_id_var.set(
             state.get('frame_id', str(self.data['frame_id']))
@@ -1944,12 +2700,14 @@ class WaypointEditor:
             self._sync_fields_from_pose(self.selected_name)
             self.name_var.set(self.selected_name)
             self._populate_station_fields(self.selected_name)
+            self._populate_rotation_fields(self.selected_name)
         else:
             self.selected_name = None
             self.name_var.set('')
             self.x_var.set('')
             self.y_var.set('')
             self.yaw_var.set('')
+            self._populate_rotation_fields('')
         self._draw_overlays()
 
     def _push_undo(self):
@@ -2002,6 +2760,11 @@ def parse_args(argv: Optional[List[str]] = None):
         default=str(DEFAULT_WAYPOINTS_PATH),
         help='Path to navigator waypoint YAML.',
     )
+    parser.add_argument(
+        '--rotation-profiles',
+        default=str(DEFAULT_ROTATION_PROFILES_PATH),
+        help='Path to waypoint rotation profile YAML.',
+    )
     return parser.parse_args(argv)
 
 
@@ -2010,8 +2773,11 @@ def main(argv: Optional[List[str]] = None):
     try:
         map_info = load_map(Path(args.map).expanduser().resolve())
         waypoints_path = Path(args.waypoints).expanduser().resolve()
+        rotation_profiles_path = Path(
+            args.rotation_profiles
+        ).expanduser().resolve()
         root = tk.Tk()
-        WaypointEditor(root, map_info, waypoints_path)
+        WaypointEditor(root, map_info, waypoints_path, rotation_profiles_path)
         root.mainloop()
     except Exception as exc:
         print(f'waypoint_editor: {exc}', file=sys.stderr)

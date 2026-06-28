@@ -5,7 +5,14 @@ from collections import Counter
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sml_msgs.msg import Task, Order, Station
+
+TASK_QOS = QoSProfile(
+    depth=1,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    reliability=QoSReliabilityPolicy.RELIABLE,
+)
 
 
 # Station Type
@@ -93,7 +100,7 @@ class OrderServer(Node):
     def __init__(self):
         super().__init__('order_server')
 
-        self.task_pub  = self.create_publisher(Task, '/sml/task', 10)
+        self.task_pub  = self.create_publisher(Task, '/sml/task', TASK_QOS)
         self.published = False
 
         # ── 입력: Tier ─────────────────────────────────────────

@@ -325,6 +325,98 @@ class Vision6DPoseManager:
         )
         return result
 
+    def show_live_frame(self, target_id=0):
+        """Show one annotated RealSense frame without waiting for a service call."""
+        try:
+            target_id = int(target_id)
+        except Exception:
+            target_id = 0
+
+        target_class = ID_TO_CLASS.get(target_id)
+        target_key = self._normalize_class_name(target_class) if target_class else None
+        model_det, model_seg, pipeline_name = self._select_models(target_id)
+
+        frames = self.pipeline.wait_for_frames(timeout_ms=500)
+        aligned = self.align.process(frames)
+        depth_frame = aligned.get_depth_frame()
+        color_frame = aligned.get_color_frame()
+        if not color_frame or not depth_frame:
+            return False
+
+        image = np.asanyarray(color_frame.get_data())
+        det_result = model_det(image, verbose=False)[0]
+        seg_result = model_seg(image, verbose=False)[0]
+
+        detections_for_vis = []
+        best = None
+        best_z = float("inf")
+
+        if det_result.boxes is not None:
+            for box in det_result.boxes:
+                cls_name = det_result.names[int(box.cls[0])]
+                cls_key = self._normalize_class_name(cls_name)
+
+                xyxy = box.xyxy[0].cpu().numpy()
+                u = int((xyxy[0] + xyxy[2]) / 2)
+                v = int((xyxy[1] + xyxy[3]) / 2)
+
+                is_target = True
+                if target_key is not None:
+                    is_target = self._target_matches(target_key, cls_key)
+
+                if self.is_border_cut_object(
+                    xyxy=xyxy,
+                    image_shape=image.shape,
+                    seg_result=seg_result,
+                    target_u=u,
+                    target_v=v,
+                    match_distance_px=self.match_distance_px,
+                    margin_px=12,
+                ):
+                    detections_for_vis.append(
+                        {
+                            "u": u,
+                            "v": v,
+                            "z": 0.0,
+                            "yaw": 0.0,
+                            "class_name": f"{cls_name}_edge_cut",
+                            "is_target": False,
+                        }
+                    )
+                    continue
+
+                z = self.get_valid_depth(depth_frame, u, v)
+                yaw = self.find_yaw_from_segmentation(seg_result, u, v) if z > 0.0 else 0.0
+                detections_for_vis.append(
+                    {
+                        "u": u,
+                        "v": v,
+                        "z": z,
+                        "yaw": yaw,
+                        "class_name": str(cls_name),
+                        "is_target": is_target,
+                    }
+                )
+
+                if is_target and 0.0 < z < best_z:
+                    best_z = z
+                    best = {
+                        "u": u,
+                        "v": v,
+                        "z": z,
+                        "yaw": yaw,
+                        "detected_class": str(cls_name),
+                    }
+
+        label = target_class if target_class else f"all ({pipeline_name})"
+        self.show_visualization(
+            det_result=det_result,
+            detections=detections_for_vis,
+            target_class=label,
+            best=best,
+        )
+        return True
+
     def _select_models(self, target_id):
         if target_id in COMPONENT_IDS:
             return self.model_comp, self.model_comp, "component"

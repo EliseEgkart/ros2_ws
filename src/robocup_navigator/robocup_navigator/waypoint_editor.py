@@ -1459,6 +1459,8 @@ class WaypointEditor:
                 tags=('measure',),
             )
 
+        self._draw_measurement_quarter_points(x1, y1, x2, y2, distance)
+
         mid_x = (x1 + x2) / 2.0
         mid_y = (y1 + y2) / 2.0
         text_id = self.canvas.create_text(
@@ -1482,6 +1484,36 @@ class WaypointEditor:
                 tags=('measure',),
             )
             self.canvas.tag_lower(background, text_id)
+
+    def _draw_measurement_quarter_points(self, x1: float, y1: float,
+                                         x2: float, y2: float,
+                                         distance: float):
+        if distance <= 0.0:
+            return
+
+        for index, ratio in enumerate((0.25, 0.50, 0.75), start=1):
+            cx = x1 + (x2 - x1) * ratio
+            cy = y1 + (y2 - y1) * ratio
+            radius = 4 if index != 2 else 5
+            self.canvas.create_oval(
+                cx - radius,
+                cy - radius,
+                cx + radius,
+                cy + radius,
+                fill='#ffffff',
+                outline='#d00000',
+                width=2,
+                tags=('measure',),
+            )
+            self.canvas.create_text(
+                cx + 7,
+                cy + 7,
+                text=f'{index}/4',
+                anchor=tk.NW,
+                fill='#d00000',
+                font=('TkDefaultFont', 8, 'bold'),
+                tags=('measure',),
+            )
 
     def _draw_diff_preview(self):
         if not self.diff_start_map or not self.diff_end_map:

@@ -13,7 +13,7 @@ from ultralytics import YOLO
 
 WORKSPACE_DIR = os.environ.get("ROS2_WS", "/home/st02/ros2_ws")
 DET_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best.pt")
-SEG_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best_old.pt")
+SEG_MODEL_PATH = DET_MODEL_PATH
 COMP_MODEL_PATH = os.path.join(WORKSPACE_DIR, "best_comp.pt")
 
 BRICK_IDS = {1, 2, 3, 4, 5, 6, 7, 8}
@@ -61,9 +61,9 @@ class PoseResult:
 class Vision6DPoseManager:
     """Ensemble detector based on vision_6Dpose_node.py.
 
-    best.pt is used for stable detection coordinates. best_old.pt is used for
-    segmentation masks and yaw extraction. The public output is kept compatible
-    with arm_interfaces/srv/GetTargetPose.
+    best.pt is used for block detection and segmentation. best_comp.pt is used
+    for component/product detection. The public output is kept compatible with
+    arm_interfaces/srv/GetTargetPose.
     """
 
     def __init__(

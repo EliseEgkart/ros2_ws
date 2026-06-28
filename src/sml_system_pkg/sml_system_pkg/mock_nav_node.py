@@ -1,4 +1,4 @@
-"""
+﻿"""
 mock_nav_node.py
 navigate_to_station Action 서버 mock.
 goal 수신 → MOVING 피드백 → delay 후 success=True 반환.
@@ -9,7 +9,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import Trigger
 
@@ -22,7 +22,7 @@ class MockNavNode(Node):
 
     def __init__(self):
         super().__init__('mock_nav_node')
-        self.cbg = ReentrantCallbackGroup()
+        self.cbg = MutuallyExclusiveCallbackGroup()
 
         self._action_server = ActionServer(
             self,

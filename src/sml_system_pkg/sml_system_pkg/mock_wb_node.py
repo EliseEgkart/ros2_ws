@@ -1,4 +1,4 @@
-"""
+﻿"""
 mock_wb_node.py
 wb_task Action 서버 mock.
 goal 수신 → PROCESSING 피드백 → delay 후 success=True 반환.
@@ -8,7 +8,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
 from sml_msgs.action import WbTask
@@ -20,7 +20,7 @@ class MockWbNode(Node):
 
     def __init__(self):
         super().__init__('mock_wb_node')
-        self.cbg = ReentrantCallbackGroup()
+        self.cbg = MutuallyExclusiveCallbackGroup()
 
         self._action_server = ActionServer(
             self,

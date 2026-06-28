@@ -1,4 +1,4 @@
-"""
+﻿"""
 mock_arm_node.py
 /amr_robot_command Service 서버 mock.
 request를 받으면 0.5초 후 success=True 응답.
@@ -18,7 +18,7 @@ request를 받으면 0.5초 후 success=True 응답.
 import time
 import rclpy
 from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
 from sml_msgs.srv import ArmCommand
@@ -28,7 +28,7 @@ class MockArmNode(Node):
 
     def __init__(self):
         super().__init__('mock_arm_node')
-        self.cbg = ReentrantCallbackGroup()
+        self.cbg = MutuallyExclusiveCallbackGroup()
 
         self.srv = self.create_service(
             ArmCommand, '/amr_robot_command',

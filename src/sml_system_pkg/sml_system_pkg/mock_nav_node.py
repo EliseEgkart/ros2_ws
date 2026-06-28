@@ -10,7 +10,6 @@ navigate_to_station Action 서버 mock.
 
 import json
 import math
-import os
 import time
 
 import rclpy
@@ -28,21 +27,8 @@ from sml_system_pkg.arena_side_utils import (
     side_to_start_goal_station,
 )
 
-def _default_config_path(filename: str) -> str:
-    try:
-        from ament_index_python.packages import get_package_share_directory
-
-        return os.path.join(
-            get_package_share_directory('sml_system_pkg'),
-            'config',
-            filename,
-        )
-    except Exception:
-        return os.path.expanduser(f'~/ros2_ws/src/sml_system_pkg/config/{filename}')
-
-
-DEFAULT_STATION_COORD_JSON_PATH = _default_config_path(
-    'station_coordinates_a_zone.json'
+DEFAULT_STATION_COORD_JSON_PATH = (
+    '/home/user/ros2_ws/src/sml_system_pkg/config/station_coordinates_a_zone.json'
 )
 
 

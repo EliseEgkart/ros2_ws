@@ -77,6 +77,7 @@ class Vision6DPoseManager:
         match_distance_px=40.0,
         visualize=False,
         visualize_window="6D Pose (Ensemble Mode)",
+        visualize_scale=1.0,
     ):
         self.logger = logger
         self.det_model_path = det_model_path
@@ -87,6 +88,7 @@ class Vision6DPoseManager:
         self.match_distance_px = float(match_distance_px)
         self.visualize = bool(visualize)
         self.visualize_window = str(visualize_window)
+        self.visualize_scale = max(0.1, float(visualize_scale))
 
         self._check_model_file(self.det_model_path)
         self._check_model_file(self.seg_model_path)
@@ -113,7 +115,8 @@ class Vision6DPoseManager:
             f"comp={self.comp_model_path}, "
             f"det_task={self.model_det.task}, seg_task={self.model_seg.task}, "
             f"comp_task={self.model_comp.task}, "
-            f"visualize={self.visualize}"
+            f"visualize={self.visualize}, "
+            f"visualize_scale={self.visualize_scale}"
         )
 
     def shutdown(self):
@@ -426,7 +429,8 @@ class Vision6DPoseManager:
 
     def show_visualization(self, det_result, detections, target_class, best=None):
         image = det_result.plot()
-        cv2.circle(image, (320, 240), 5, (0, 0, 255), -1)
+        height, width = image.shape[:2]
+        cv2.circle(image, (width // 2, height // 2), 5, (0, 0, 255), -1)
         cv2.putText(
             image,
             f"target: {target_class}",
@@ -463,12 +467,21 @@ class Vision6DPoseManager:
             cv2.putText(
                 image,
                 label,
-                (max(0, u - 90), min(470, v + 24)),
+                (max(0, u - 90), min(height - 10, v + 24)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
                 color,
                 1,
                 cv2.LINE_AA,
+            )
+
+        if self.visualize_scale != 1.0:
+            image = cv2.resize(
+                image,
+                None,
+                fx=self.visualize_scale,
+                fy=self.visualize_scale,
+                interpolation=cv2.INTER_LINEAR,
             )
 
         cv2.imshow(self.visualize_window, image)

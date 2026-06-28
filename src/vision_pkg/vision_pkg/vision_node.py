@@ -20,6 +20,7 @@ class VisionNode(Node):
         self.declare_parameter('comp_model_path', COMP_MODEL_PATH)
         self.declare_parameter('visualize', False)
         self.declare_parameter('visualize_window', '6D Pose (Ensemble Mode)')
+        self.declare_parameter('visualize_scale', 1.0)
         self.declare_parameter('live_view', False)
         self.declare_parameter('live_target_id', 0)
         self.declare_parameter('live_view_period_sec', 0.15)
@@ -38,6 +39,7 @@ class VisionNode(Node):
                     bool(self.get_parameter('live_view').value)
                 ),
                 visualize_window=self.get_parameter('visualize_window').value,
+                visualize_scale=float(self.get_parameter('visualize_scale').value),
             )
             self.get_logger().info('[VISION] vision_node started (6D ensemble based)')
             if bool(self.get_parameter('live_view').value):

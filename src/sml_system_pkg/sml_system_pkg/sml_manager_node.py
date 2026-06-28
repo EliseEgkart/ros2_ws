@@ -769,7 +769,8 @@ class SmlManagerNode(Node):
         req = ArmCommand.Request()
         req.action = 'PRODUCE'
         req.object_ids = list(step.object_ids)
-        req.location = int(step.station_id)
+        req.station_id = int(step.station_id)
+        req.location = str(step.station_id)
         arm_slide_ids = self._set_arm_request_slide_ids(req, step, req.action)
 
         self.get_logger().info(
@@ -945,7 +946,8 @@ class SmlManagerNode(Node):
             return
 
         req.object_ids = list(step.object_ids)
-        req.location = int(step.station_id)
+        req.station_id = int(step.station_id)
+        req.location = str(step.station_id)
         arm_slide_ids = self._set_arm_request_slide_ids(req, step, req.action)
 
         self.get_logger().info(

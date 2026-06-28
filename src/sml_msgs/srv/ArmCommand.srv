@@ -3,6 +3,7 @@ string action
 int32[] object_ids
 int32  station_id
 string location
+int32[] slide_ids
 ---
 bool success
 int32[] slots

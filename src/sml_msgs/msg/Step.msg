@@ -14,3 +14,4 @@ int32   action
 int32[] object_ids
 int32   station_id
 int32[] depends_on
+int32[] slide_ids

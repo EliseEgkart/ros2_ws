@@ -1,9 +1,9 @@
 """Plan D planner constants and runtime configuration.
 
 Slot convention used by Step.slide_ids:
-    slot 0   : product / recycle-product default slot
-    slot 1-5 : raw material slides
-    slot 6-7 : AMR assembly slots / recycle auxiliary preload slots
+    slot 1   : product / recycle-product default slot
+    slot 2-6 : raw material slides
+    slot 7-8 : AMR assembly slots / recycle auxiliary preload slots
 """
 
 from dataclasses import dataclass
@@ -48,10 +48,11 @@ BATCH_SIZE = 5
 STATION_START_GOAL = 0
 FIXED_WORKBENCH_STATION_ID = 6
 
-# Latest AMR internal slot convention.
-PRODUCT_SLOT_INDEX = 0
-RAW_SLOT_INDICES = [1, 2, 3, 4, 5]
-ASSEMBLY_SLOT_INDICES = [6, 7]
+# AMR physical slots are numbered from 1.
+PRODUCT_SLOT_INDEX = 1
+RAW_SLOT_INDICES = [2, 3, 4, 5, 6]
+ASSEMBLY_SLOT_INDICES = [7, 8]
+AMR_SLOT_INDICES = [PRODUCT_SLOT_INDEX, *RAW_SLOT_INDICES, *ASSEMBLY_SLOT_INDICES]
 RAW_SLIDE_CAPACITY_UNITS = 3
 
 # Backward-compatible aliases.
@@ -72,6 +73,17 @@ STATION_COORD_JSON_PARAM = 'station_coord_json_path'
 DEFAULT_STATION_COORD_JSON_PATH = (
     '/home/user/ros2_ws/src/sml_system_pkg/config/station_coordinates_a_zone.json'
 )
+WAYPOINT_YAML_PARAM = 'waypoint_yaml_path'
+DEFAULT_WAYPOINT_YAML_PATH = (
+    '/home/user/ros2_ws/src/sml_system_pkg/config/robocup_waypoint.yaml'
+)
+
+# Optional fixed costs added to waypoint-based navigation estimates.
+# Keep the defaults at zero until measured averages are supplied as ROS params.
+NAV_ALIGN_TIME_PARAM = 'nav_align_time_avg'
+NAV_ALIGN_TIME_AVG = 0.0
+NAV_POST_TIME_PARAM = 'nav_post_time_avg'
+NAV_POST_TIME_AVG = 0.0
 
 
 @dataclass
@@ -79,6 +91,9 @@ class PlannerConfig:
     use_time_cost: bool = True
     amr_speed_mps: float = AMR_SPEED
     station_coord_json_path: str = DEFAULT_STATION_COORD_JSON_PATH
+    waypoint_yaml_path: str = DEFAULT_WAYPOINT_YAML_PATH
+    nav_align_time_avg: float = NAV_ALIGN_TIME_AVG
+    nav_post_time_avg: float = NAV_POST_TIME_AVG
 
     fixed_workbench_station_id: int = FIXED_WORKBENCH_STATION_ID
     station_start_goal: int = STATION_START_GOAL

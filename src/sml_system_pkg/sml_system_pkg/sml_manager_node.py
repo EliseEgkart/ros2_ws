@@ -6,11 +6,12 @@ depends_on 기반으로 AMR / WB를 병렬 실행하는 노드.
 A/B 경기장 대응:
   - side:=a 또는 side:=b 파라미터 사용
   - 일반 station은 Step.station_id를 그대로 AMR에 전달
-  - GOAL/복귀 station_id=0은 항상 숫자 0으로 전달
+  - GOAL/복귀 station_id는 A면 0, B면 9를 사용
 """
 
 import threading
 import time
+from collections import deque
 
 import rclpy
 from rclpy.action import ActionClient
@@ -24,10 +25,12 @@ from sml_msgs.action import NavTask, WbTask
 from sml_msgs.msg import Step, Task
 from sml_msgs.srv import ArmCommand, GetPlan
 
-from .arena_side_utils import (
+from sml_system_pkg.arena_side_utils import (
     normalize_side,
     nav_target_for_station,
+    side_to_fixed_workbench_station,
 )
+from sml_system_pkg.planning.planner_config import RAW_SLOT_INDICES
 
 
 class SmlManagerNode(Node):
@@ -42,11 +45,27 @@ class SmlManagerNode(Node):
         self.completed_steps = set()    # 완료된 step_id 집합
         self.amr_busy        = False    # AMR 트랙 점유 여부
         self.wb_busy         = False    # WB 트랙 점유 여부
+        self.wb_reserved_by_amr = None  # WB 접근을 예약한 AMR step_id
         self.plan_requested  = False    # GetPlan 요청 여부 (중복 방지)
 
-        # Plan D: AMR PRODUCE는 이동과 AMR 내부 조립이 동시에 진행된다.
+        # Plan C: AMR PRODUCE는 이동과 AMR 내부 조립이 동시에 진행된다.
         # step 완료 조건은 "NAV 도착 완료 AND AMR 조립 완료"이다.
         self._amr_produce_states = {}
+
+        # Plan D ARM command slot conversion state.
+        # Planner Step.slide_ids keep logical ids such as order_index*10+slot_index.
+        # The physical AMR arm expects raw-slide ids in the form
+        #     raw_slide_no * 10 + pick_position
+        # for raw slides. Product/assembly slots are sent as their physical slot number.
+        self._arm_raw_slot_indices = list(RAW_SLOT_INDICES)
+        self._arm_raw_slots = {
+            slot: {'units': [None, None, None], 'items': {}}
+            for slot in self._arm_raw_slot_indices
+        }
+        self._arm_item_keys = {}             # (logical_slide_id, object_id) -> deque(uid)
+        self._arm_next_uid = 1
+        self._arm_cmd_slide_cache = {}       # step_id -> converted slide ids used for retries
+        self._arm_pending_removals = {}      # step_id -> [uid, ...] to clear after success
 
         # step 소요 시간 측정 관련
         self.step_start_times       = {}     # step_id -> time.monotonic() 시작 시각
@@ -63,6 +82,7 @@ class SmlManagerNode(Node):
 
         self.declare_parameter('side', 'a')
         self.side = normalize_side(self.get_parameter('side').value)
+        self.fixed_workbench_station = side_to_fixed_workbench_station(self.side)
 
         self.declare_parameter(
             'post_process_service_name',
@@ -153,6 +173,7 @@ class SmlManagerNode(Node):
             self.completed_steps.clear()
             self.amr_busy = False
             self.wb_busy = False
+            self.wb_reserved_by_amr = None
 
             # 새 계획 기준으로 시간 측정값 초기화
             self.step_start_times.clear()
@@ -199,11 +220,19 @@ class SmlManagerNode(Node):
 
                 if step.type == Step.AMR and not self.amr_busy \
                         and amr_step is None:
+                    needs_wb = self._is_amr_wb_interaction(step)
+                    if needs_wb and (
+                        self.wb_busy or self.wb_reserved_by_amr is not None
+                    ):
+                        continue
                     self.amr_busy = True
+                    if needs_wb:
+                        self.wb_reserved_by_amr = int(step.step_id)
                     self.pending_steps.remove(step)
                     amr_step = step
 
                 elif step.type == Step.WB and not self.wb_busy \
+                        and self.wb_reserved_by_amr is None \
                         and wb_step is None:
                     self.wb_busy = True
                     self.pending_steps.remove(step)
@@ -228,8 +257,7 @@ class SmlManagerNode(Node):
                 f'[MANAGER] AMR step {amr_step.step_id} 시작 '
                 f'(action={amr_step.action}, '
                 f'objects={list(amr_step.object_ids)}, '
-                f'station={amr_step.station_id}, '
-                f'slide_ids={list(getattr(amr_step, "slide_ids", []))})')
+                f'station={amr_step.station_id})')
             self._publish_status(
                 f'AMR step {amr_step.step_id} 실행 중')
             self._execute_amr(amr_step)
@@ -239,8 +267,7 @@ class SmlManagerNode(Node):
             self.get_logger().info(
                 f'[MANAGER] WB step {wb_step.step_id} 시작 '
                 f'(action={wb_step.action}, '
-                f'objects={list(wb_step.object_ids)}, '
-                f'slide_ids={list(getattr(wb_step, "slide_ids", []))})')
+                f'objects={list(wb_step.object_ids)})')
             self._publish_status(
                 f'WB step {wb_step.step_id} 실행 중')
             self._execute_wb(wb_step)
@@ -249,6 +276,20 @@ class SmlManagerNode(Node):
             self.get_logger().info('[MANAGER] ✅ 모든 스텝 완료!')
             self._log_step_duration_summary()
             self._publish_status('완료')
+
+    def _is_amr_wb_interaction(self, step):
+        return (
+            int(step.type) == int(Step.AMR)
+            and int(step.action) in (int(Step.LOAD), int(Step.UNLOAD))
+            and int(step.station_id) == int(self.fixed_workbench_station)
+        )
+
+    def _set_amr_idle(self, step):
+        """Release the AMR track and any WB access reservation held by this step."""
+        with self._lock:
+            self.amr_busy = False
+            if self.wb_reserved_by_amr == int(step.step_id):
+                self.wb_reserved_by_amr = None
 
     def _on_step_complete(self, step_id):
         with self._lock:
@@ -284,7 +325,7 @@ class SmlManagerNode(Node):
     # 일반 LOAD/UNLOAD:
     #   NAV Action 완료 → ARM Service 실행 → post_process → step 완료
     #
-    # Plan D AMR PRODUCE:
+    # Plan C AMR PRODUCE:
     #   NAV Action과 AMR 내부 조립 Service를 동시에 시작한다.
     #   NAV 도착과 조립 완료가 모두 끝난 뒤 post_process를 수행하고 step 완료 처리한다.
     # ──────────────────────────────────────────────────────
@@ -293,8 +334,8 @@ class SmlManagerNode(Node):
         """
         navigator goal에 target을 넣는다.
 
-        - station_id == 0이면 숫자 0을 목표로 사용한다.
-        - 일반 station은 Step.station_id를 그대로 사용한다.
+        - A면/B면 start/goal을 포함해 숫자 station_id를 그대로 사용한다.
+        - NavTask.Goal.station_id가 string 타입이면 숫자를 문자열로 변환한다.
         - goal에 location/target/station_name 같은 string 필드가 있으면 함께 채운다.
         """
         nav_target = nav_target_for_station(int(station_id), self.side)
@@ -309,10 +350,9 @@ class SmlManagerNode(Node):
             station_id_type = field_types['station_id']
 
             if station_id_type == 'string':
-                goal.station_id = nav_target
+                goal.station_id = str(nav_target)
                 return nav_target
 
-            # int 계열 station_id: GOAL/home도 숫자 0 그대로 전송한다.
             goal.station_id = int(nav_target)
             return nav_target
 
@@ -322,7 +362,7 @@ class SmlManagerNode(Node):
     def _execute_amr(self, step, retry=0):
         MAX_RETRY = 1
 
-        # Plan D:
+        # Plan C:
         # Step.AMR + Step.PRODUCE는 "목표 station으로 이동하면서 AMR 내부 조립"이다.
         # 기존 LOAD/UNLOAD처럼 NAV 완료 후 ARM을 실행하면 이동 중 조립이 되지 않으므로
         # 별도 경로에서 NAV와 PRODUCE service를 동시에 시작한다.
@@ -333,8 +373,7 @@ class SmlManagerNode(Node):
         if not self.nav_client.wait_for_server(timeout_sec=2.0):
             self.get_logger().error(
                 f'[NAV] step {step.step_id}: nav 서버 없음')
-            with self._lock:
-                self.amr_busy = False
+            self._set_amr_idle(step)
             return
 
         goal = NavTask.Goal()
@@ -353,8 +392,7 @@ class SmlManagerNode(Node):
         if not goal_handle.accepted:
             self.get_logger().error(
                 f'[NAV] step {step.step_id} goal 거절됨')
-            with self._lock:
-                self.amr_busy = False
+            self._set_amr_idle(step)
             return
 
         result_future = goal_handle.get_result_async()
@@ -375,8 +413,7 @@ class SmlManagerNode(Node):
             else:
                 self.get_logger().error(
                     f'[NAV] step {step.step_id} 최종 실패')
-                with self._lock:
-                    self.amr_busy = False
+                self._set_amr_idle(step)
             return
 
         self.get_logger().info(
@@ -385,8 +422,7 @@ class SmlManagerNode(Node):
         if step.action == Step.GOAL:
             self.get_logger().info(
                 f'[NAV] step {step.step_id} GOAL 도착 → ARM 생략, 완료 처리')
-            with self._lock:
-                self.amr_busy = False
+            self._set_amr_idle(step)
             self._on_step_complete(step.step_id)
             return
 
@@ -394,7 +430,7 @@ class SmlManagerNode(Node):
         self._execute_arm(step)
 
     # ──────────────────────────────────────────────────────
-    # Plan D: AMR 내부 조립
+    # Plan C: AMR 내부 조립
     # ──────────────────────────────────────────────────────
 
     def _execute_amr_produce(self, step, retry=0):
@@ -410,15 +446,13 @@ class SmlManagerNode(Node):
         if not self.nav_client.wait_for_server(timeout_sec=2.0):
             self.get_logger().error(
                 f'[AMR PRODUCE] step {step.step_id}: nav 서버 없음')
-            with self._lock:
-                self.amr_busy = False
+            self._set_amr_idle(step)
             return
 
         if not self.arm_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error(
                 f'[AMR PRODUCE] step {step.step_id}: arm 서비스 없음')
-            with self._lock:
-                self.amr_busy = False
+            self._set_amr_idle(step)
             return
 
         goal = NavTask.Goal()
@@ -462,18 +496,286 @@ class SmlManagerNode(Node):
         send_future.add_done_callback(
             lambda f, s=step, r=retry: self._on_amr_produce_nav_accepted(f, s, r))
 
+    # ──────────────────────────────────────────────────────
+    # Plan D ARM slot conversion
+    # ──────────────────────────────────────────────────────
+
+    def _logical_slot_index(self, slide_id):
+        sid = int(slide_id)
+        return abs(sid) % 10
+
+    def _is_raw_slot_index(self, slot_index):
+        return int(slot_index) in self._arm_raw_slot_indices
+
+    def _raw_slide_no_from_slot(self, slot_index):
+        # Physical AMR raw slides are numbered 1~5, while planner slot_index is 2~6.
+        return self._arm_raw_slot_indices.index(int(slot_index)) + 1
+
+    def _raw_size_for_arm_slot(self, object_id):
+        # Current official Plan D rule used by the planner:
+        # raw 1~4: size 1, raw 5~8: size 2.
+        # If the real hardware size table changes, update only this function or load it from YAML.
+        try:
+            raw = int(object_id)
+        except Exception:
+            return 1
+        return 1 if 1 <= raw <= 4 else 2
+
+    def _new_arm_uid(self):
+        uid = self._arm_next_uid
+        self._arm_next_uid += 1
+        return uid
+
+    def _find_free_raw_units(self, slot_index, size):
+        slot_state = self._arm_raw_slots.setdefault(
+            int(slot_index), {'units': [None, None, None], 'items': {}}
+        )
+        units = slot_state['units']
+        size = int(size)
+        if size <= 1:
+            for unit_idx, used_by in enumerate(units):
+                if used_by is None:
+                    return [unit_idx]
+            return None
+        # size 2 object occupies two consecutive unit cells.
+        for unit_idx in (0, 1):
+            if units[unit_idx] is None and units[unit_idx + 1] is None:
+                return [unit_idx, unit_idx + 1]
+        return None
+
+    def _pick_position_from_units(self, occupied_units):
+        # Unit layout: [0], [1], [2]
+        # size 1 centers: 0, 2, 4
+        # size 2 centers: 1 or 3
+        if len(occupied_units) == 1:
+            return int(occupied_units[0]) * 2
+        return int(min(occupied_units)) * 2 + 1
+
+    def _assign_raw_arm_position(self, logical_slide_id, object_id):
+        logical_slide_id = int(logical_slide_id)
+        object_id = int(object_id) if object_id is not None else 0
+        slot_index = self._logical_slot_index(logical_slide_id)
+        slide_no = self._raw_slide_no_from_slot(slot_index)
+        size = self._raw_size_for_arm_slot(object_id)
+        occupied_units = self._find_free_raw_units(slot_index, size)
+        if occupied_units is None:
+            self.get_logger().warn(
+                f'[ARM SLOT] raw slot {slot_index}에 object={object_id}, size={size}를 넣을 공간이 없습니다. '
+                f'fallback으로 slide_no*10 사용'
+            )
+            return slide_no * 10
+
+        uid = self._new_arm_uid()
+        pos = self._pick_position_from_units(occupied_units)
+        arm_slide_id = slide_no * 10 + pos
+        slot_state = self._arm_raw_slots[slot_index]
+        for unit_idx in occupied_units:
+            slot_state['units'][unit_idx] = uid
+        slot_state['items'][uid] = {
+            'uid': uid,
+            'logical_slide_id': logical_slide_id,
+            'object_id': object_id,
+            'slot_index': slot_index,
+            'slide_no': slide_no,
+            'position': pos,
+            'arm_slide_id': arm_slide_id,
+            'units': list(occupied_units),
+        }
+        key = (logical_slide_id, object_id)
+        self._arm_item_keys.setdefault(key, deque()).append(uid)
+
+        self.get_logger().info(
+            f'[ARM SLOT] assign logical_slide={logical_slide_id}, object={object_id} '
+            f'-> raw_slide={slide_no}, pos={pos}, arm_slide_id={arm_slide_id}'
+        )
+        return arm_slide_id
+
+    def _lookup_raw_arm_position(self, logical_slide_id, object_id=None, remove_after_success=False, step_id=None):
+        logical_slide_id = int(logical_slide_id)
+        candidate_uid = None
+
+        if object_id is not None:
+            key = (logical_slide_id, int(object_id))
+            queue = self._arm_item_keys.get(key)
+            if queue:
+                candidate_uid = queue[0]
+
+        if candidate_uid is None:
+            # Fallback for AMR PRODUCE where object_ids may contain only the product id
+            # while slide_ids contain all recipe slots.
+            for (sid, _obj), queue in self._arm_item_keys.items():
+                if sid == logical_slide_id and queue:
+                    candidate_uid = queue[0]
+                    break
+
+        if candidate_uid is None:
+            slot_index = self._logical_slot_index(logical_slide_id)
+            slide_no = self._raw_slide_no_from_slot(slot_index)
+            self.get_logger().warn(
+                f'[ARM SLOT] logical_slide={logical_slide_id}, object={object_id}에 대한 기존 적재 정보를 찾지 못했습니다. '
+                f'fallback으로 raw_slide={slide_no}, pos=0 사용'
+            )
+            return slide_no * 10
+
+        slot_index = self._logical_slot_index(logical_slide_id)
+        entry = self._arm_raw_slots[slot_index]['items'].get(candidate_uid)
+        if entry is None:
+            slide_no = self._raw_slide_no_from_slot(slot_index)
+            return slide_no * 10
+
+        if remove_after_success and step_id is not None:
+            self._arm_pending_removals.setdefault(int(step_id), []).append(candidate_uid)
+        return int(entry['arm_slide_id'])
+
+    def _commit_arm_slot_removals(self, step):
+        step_id = int(step.step_id)
+        uids = self._arm_pending_removals.pop(step_id, [])
+        if not uids:
+            return
+        for uid in uids:
+            for slot_index, slot_state in self._arm_raw_slots.items():
+                entry = slot_state['items'].pop(uid, None)
+                if entry is None:
+                    continue
+                for unit_idx in entry.get('units', []):
+                    if 0 <= unit_idx < len(slot_state['units']) and slot_state['units'][unit_idx] == uid:
+                        slot_state['units'][unit_idx] = None
+                key = (int(entry['logical_slide_id']), int(entry['object_id']))
+                queue = self._arm_item_keys.get(key)
+                if queue and uid in queue:
+                    try:
+                        queue.remove(uid)
+                    except ValueError:
+                        pass
+                    if not queue:
+                        self._arm_item_keys.pop(key, None)
+                self.get_logger().info(
+                    f'[ARM SLOT] release logical_slide={entry["logical_slide_id"]}, '
+                    f'object={entry["object_id"]}, arm_slide_id={entry["arm_slide_id"]}'
+                )
+                break
+
+    def _commit_amr_produce_slot_changes(self, step):
+        """
+        PRODUCE가 성공하면 첫 번째 slide의 기준 재료를 완성품으로 교체한다.
+
+        조립 결과물은 planner가 지정한 첫 번째 slide(assembly/base 위치)에
+        그대로 남는다. 이 위치가 raw slide의 세부 위치로 변환된 경우에도
+        기존 arm_slide_id와 점유 unit을 보존해야 다음 UNLOAD가 같은 위치를
+        사용한다. 나머지 PRODUCE 입력은 기존 방식대로 해제한다.
+        """
+        step_id = int(step.step_id)
+        logical_slide_ids = list(getattr(step, 'slide_ids', []))
+        product_ids = list(getattr(step, 'object_ids', []))
+        pending_uids = self._arm_pending_removals.get(step_id, [])
+
+        if not logical_slide_ids or not product_ids or not pending_uids:
+            self._commit_arm_slot_removals(step)
+            return
+
+        output_slide_id = int(logical_slide_ids[0])
+        product_id = int(product_ids[0])
+        replacement_uid = None
+
+        # pending_uids에는 이번 PRODUCE 명령에서 실제로 참조한 항목만 있다.
+        # 같은 logical slide에 여러 물체가 있어도 정확히 사용한 항목을 승계한다.
+        for uid in pending_uids:
+            for slot_state in self._arm_raw_slots.values():
+                entry = slot_state['items'].get(uid)
+                if entry is None or int(entry['logical_slide_id']) != output_slide_id:
+                    continue
+
+                old_object_id = int(entry['object_id'])
+                old_key = (output_slide_id, old_object_id)
+                old_queue = self._arm_item_keys.get(old_key)
+                if old_queue and uid in old_queue:
+                    old_queue.remove(uid)
+                    if not old_queue:
+                        self._arm_item_keys.pop(old_key, None)
+
+                entry['object_id'] = product_id
+                self._arm_item_keys.setdefault(
+                    (output_slide_id, product_id), deque()
+                ).append(uid)
+                replacement_uid = uid
+
+                self.get_logger().info(
+                    f'[ARM SLOT] replace logical_slide={output_slide_id}, '
+                    f'object={old_object_id}->{product_id}, '
+                    f'arm_slide_id={entry["arm_slide_id"]}'
+                )
+                break
+            if replacement_uid is not None:
+                break
+
+        if replacement_uid is not None:
+            self._arm_pending_removals[step_id] = [
+                uid for uid in pending_uids if uid != replacement_uid
+            ]
+
+        self._commit_arm_slot_removals(step)
+
+    def _convert_step_slide_ids_for_arm(self, step, action_name):
+        step_id = int(step.step_id)
+        if step_id in self._arm_cmd_slide_cache:
+            return list(self._arm_cmd_slide_cache[step_id])
+
+        logical_slide_ids = list(getattr(step, 'slide_ids', []))
+        object_ids = list(step.object_ids)
+        converted = []
+
+        for idx, sid in enumerate(logical_slide_ids):
+            slot_index = self._logical_slot_index(sid)
+            # PRODUCE object_ids are output product IDs, not input raw IDs.
+            # Look up each input by logical slide so batched products are handled
+            # without falsely matching a product ID to a raw slot.
+            object_id = (
+                None
+                if action_name == 'PRODUCE'
+                else object_ids[idx] if idx < len(object_ids) else None
+            )
+
+            if self._is_raw_slot_index(slot_index):
+                if action_name == 'LOAD':
+                    converted.append(self._assign_raw_arm_position(sid, object_id))
+                elif action_name in ('UNLOAD', 'PRODUCE'):
+                    converted.append(self._lookup_raw_arm_position(
+                        sid, object_id,
+                        remove_after_success=(action_name in ('UNLOAD', 'PRODUCE')),
+                        step_id=step_id,
+                    ))
+                else:
+                    converted.append(self._lookup_raw_arm_position(sid, object_id))
+            else:
+                # Product slot and assembly slots are already physical slot numbers.
+                converted.append(slot_index)
+
+        self._arm_cmd_slide_cache[step_id] = list(converted)
+        return converted
+
+    def _set_arm_request_slide_ids(self, req, step, action_name):
+        converted = self._convert_step_slide_ids_for_arm(step, action_name)
+        if hasattr(req, 'slide_ids'):
+            req.slide_ids = list(converted)
+        else:
+            if converted:
+                self.get_logger().warn(
+                    '[ARM SLOT] ArmCommand.srv에 slide_ids 필드가 없어 변환된 적재 위치를 전달하지 못합니다. '
+                    'sml_msgs/srv/ArmCommand.srv에 int32[] slide_ids를 추가해야 합니다.'
+                )
+        return converted
+
     def _send_amr_produce_arm(self, step, nav_target, retry=0):
         req = ArmCommand.Request()
         req.action = 'PRODUCE'
         req.object_ids = list(step.object_ids)
         req.location = int(step.station_id)
-        req.slide_ids = list(getattr(step, 'slide_ids', []))
+        arm_slide_ids = self._set_arm_request_slide_ids(req, step, req.action)
 
         self.get_logger().info(
             f'[ARM/PRODUCE] step {step.step_id} → '
             f'PRODUCE product={list(step.object_ids)} | '
-            f'location={req.location} | '
-            f'slide_ids={list(req.slide_ids)}'
+            f'location={req.location} | arm_slide_ids={arm_slide_ids}'
         )
 
         future = self.arm_client.call_async(req)
@@ -571,6 +873,7 @@ class SmlManagerNode(Node):
         self.get_logger().info(
             f'[ARM/PRODUCE] step {step.step_id} 조립 완료 '
             f'| slots={list(response.slots)}')
+        self._commit_amr_produce_slot_changes(step)
         self._mark_amr_produce_part_done(step, 'arm')
 
     def _mark_amr_produce_part_done(self, step, part):
@@ -624,8 +927,7 @@ class SmlManagerNode(Node):
         if not self.arm_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error(
                 f'[ARM] step {step.step_id}: arm 서비스 없음')
-            with self._lock:
-                self.amr_busy = False
+            self._set_amr_idle(step)
             return
 
         req = ArmCommand.Request()
@@ -639,18 +941,18 @@ class SmlManagerNode(Node):
         else:
             self.get_logger().error(
                 f'[ARM] step {step.step_id}: 지원하지 않는 action={step.action}')
-            with self._lock:
-                self.amr_busy = False
+            self._set_amr_idle(step)
             return
 
         req.object_ids = list(step.object_ids)
         req.location = int(step.station_id)
-        req.slide_ids = list(getattr(step, 'slide_ids', []))
+        arm_slide_ids = self._set_arm_request_slide_ids(req, step, req.action)
 
         self.get_logger().info(
             f'[ARM] step {step.step_id} → '
-            f'{req.action} {list(step.object_ids)} | '
-            f'location={req.location} | slide_ids={list(req.slide_ids)}')
+            f'{req.action} {list(step.object_ids)} | location={req.location} | '
+            f'logical_slide_ids={list(getattr(step, "slide_ids", []))} | '
+            f'arm_slide_ids={arm_slide_ids}')
 
         future = self.arm_client.call_async(req)
         future.add_done_callback(
@@ -664,8 +966,7 @@ class SmlManagerNode(Node):
         except Exception as e:
             self.get_logger().error(
                 f'[ARM] step {step.step_id} 예외: {e}')
-            with self._lock:
-                self.amr_busy = False
+            self._set_amr_idle(step)
             return
 
         if not response.success:
@@ -679,13 +980,13 @@ class SmlManagerNode(Node):
             else:
                 self.get_logger().error(
                     f'[ARM] step {step.step_id} 최종 실패')
-                with self._lock:
-                    self.amr_busy = False
+                self._set_amr_idle(step)
             return
 
         self.get_logger().info(
             f'[ARM] step {step.step_id} 완료 '
             f'| slots={list(response.slots)}')
+        self._commit_arm_slot_removals(step)
         self._execute_nav_post_process(step)
 
     def _execute_nav_post_process(self, step, retry=0):
@@ -694,8 +995,7 @@ class SmlManagerNode(Node):
         if not self.post_process_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error(
                 f'[POST] step {step.step_id}: post_process 서비스 없음')
-            with self._lock:
-                self.amr_busy = False
+            self._set_amr_idle(step)
             return
 
         self.get_logger().info(
@@ -720,8 +1020,7 @@ class SmlManagerNode(Node):
                     f'({retry+1}/{MAX_RETRY})')
                 self._execute_nav_post_process(step, retry + 1)
             else:
-                with self._lock:
-                    self.amr_busy = False
+                self._set_amr_idle(step)
             return
 
         if not response.success:
@@ -733,12 +1032,13 @@ class SmlManagerNode(Node):
                     f'({retry+1}/{MAX_RETRY})')
                 self._execute_nav_post_process(step, retry + 1)
             else:
-                with self._lock:
-                    self.amr_busy = False
+                self._set_amr_idle(step)
             return
 
         self.get_logger().info(f'[POST] step {step.step_id} 완료')
         with self._lock:
+            if self.wb_reserved_by_amr == int(step.step_id):
+                self.wb_reserved_by_amr = None
             self.amr_busy = False
             self._amr_produce_states.pop(int(step.step_id), None)
         self._on_step_complete(step.step_id)
@@ -830,7 +1130,6 @@ class SmlManagerNode(Node):
             'action': self._step_action_name(step.action),
             'objects': list(step.object_ids),
             'station': int(step.station_id),
-            'slide_ids': list(getattr(step, 'slide_ids', [])),
             'depends_on': list(step.depends_on),
         }
 
@@ -865,7 +1164,6 @@ class SmlManagerNode(Node):
                 f'{record["action"]} | '
                 f'objects={record["objects"]} | '
                 f'station={record["station"]} | '
-                f'slide_ids={record.get("slide_ids", [])} | '
                 f'elapsed={elapsed_text}'
             )
 
@@ -902,7 +1200,6 @@ class SmlManagerNode(Node):
                 f'objects={list(s.object_ids)} | '
                 f'station={s.station_id} | '
                 f'nav_target={nav_target} | '
-                f'slide_ids={list(getattr(s, "slide_ids", []))} | '
                 f'depends_on={list(s.depends_on)}')
         self.get_logger().info('==============================')
 

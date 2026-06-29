@@ -9,6 +9,10 @@ robocup_planner:
     driving_velocity: 0.5
     parking_duration: 1.5
     exiting_duration: 1.0
+    # Debug: export full plan result to JSON file before execution.
+    # Set debug_export_dir to an absolute path to override the default (/tmp/robocup_planner).
+    debug_export: false
+    debug_export_dir: ""
 
 order_server:
   ros__parameters:

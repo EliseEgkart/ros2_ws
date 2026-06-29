@@ -16,9 +16,12 @@ Blocking helper methods (navigate, arm_*, wb_task) are called from the
 executor thread and use threading.Event to wait for ROS2 async results.
 """
 
+import json
+import os
 import threading
 from collections import Counter
-from typing import Optional
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 import rclpy
 from rclpy.action import ActionClient
@@ -92,6 +95,8 @@ class PlannerNode(Node):
         self.declare_parameter('driving_velocity', 0.5)
         self.declare_parameter('parking_duration', 1.5)
         self.declare_parameter('exiting_duration', 1.0)
+        self.declare_parameter('debug_export', False)
+        self.declare_parameter('debug_export_dir', '')
 
         wp_path = self.get_parameter('waypoint_yaml').get_parameter_value().string_value
         task_topic = self.get_parameter('task_topic').get_parameter_value().string_value
@@ -100,6 +105,9 @@ class PlannerNode(Node):
         arm_service = self.get_parameter('arm_service').get_parameter_value().string_value
         wb_ready_topic = self.get_parameter('wb_ready_topic').get_parameter_value().string_value
         post_process_service = self.get_parameter('post_process_service').get_parameter_value().string_value
+        self._debug_export: bool = self.get_parameter('debug_export').get_parameter_value().bool_value
+        _export_dir = self.get_parameter('debug_export_dir').get_parameter_value().string_value
+        self._debug_export_dir: str = _export_dir if _export_dir else '/tmp/robocup_planner'
 
         if not wp_path:
             self.get_logger().warning("waypoint_yaml parameter is empty; distances will be inf")
@@ -174,6 +182,8 @@ class PlannerNode(Node):
     def _plan(self, msg: Task) -> Plan:
         from sml_msgs.msg import Station as StationMsg
 
+        _dbg: Dict[str, Any] = {}  # collects intermediate data when debug_export is enabled
+
         # Parse orders
         produce_ids = [o.product_id for o in msg.order_list if o.order_type == 1]
         recycle_ids = [o.product_id for o in msg.order_list if o.order_type == 2]
@@ -229,6 +239,20 @@ class PlannerNode(Node):
 
         home_id = 0
 
+        if self._debug_export:
+            _dbg['input'] = {
+                'produce_ids': produce_ids,
+                'recycle_ids': recycle_ids,
+                'stations': [
+                    {
+                        'station_id': st.station_id,
+                        'station_type': st.station_type,
+                        'material_ids': list(st.material_ids),
+                    }
+                    for st in msg.arena_layout
+                ],
+            }
+
         # Compute aidlist and net_aidlist (recycling already subtracted)
         aidlist, net_aidlist, recycled_materials = compute_net_aidlist(
             produce_ids, recycle_ids
@@ -259,6 +283,21 @@ class PlannerNode(Node):
             ]
 
         satisfied, missing = check_storage_satisfies(storage_mid, net_aidlist)
+
+        if self._debug_export:
+            _dbg['computed'] = {
+                'aidlist': dict(aidlist),
+                'net_aidlist': dict(net_aidlist),
+                'recycled_materials': dict(recycled_materials),
+                'storage_stations': storage_stations,
+                'batch_stations_1080': batch_stations_1080,
+                'batch_stations_90': batch_stations_90,
+                'workbench_station_id': workbench_station_id,
+                'customer_station_id': customer_station_id,
+            }
+            _dbg['midlist'] = {
+                'storage_mid': storage_mid,
+            }
 
         # Step B: if not satisfied, add batch 10-80 and re-check
         use_batch_1080 = False
@@ -349,6 +388,9 @@ class PlannerNode(Node):
                         'is_mix_batch': False,
                     })
 
+        if self._debug_export:
+            _dbg['midlist']['full_midlist'] = full_midlist
+
         # Build final mid list
         mid = build_mid(full_midlist, net_aidlist)
 
@@ -381,7 +423,32 @@ class PlannerNode(Node):
             f"Plan ready: {len(mid)} pickup entries, "
             f"workbench={workbench_ids}, in-transit={intransit_ids}"
         )
+
+        if self._debug_export:
+            _dbg['midlist']['final_mid'] = mid
+            _dbg['plan'] = {
+                'workbench_products': workbench_ids,
+                'intransit_products': intransit_ids,
+                'workbench_station_id': workbench_station_id,
+                'customer_station_id': customer_station_id,
+                'home_station_id': home_id,
+                'surplus_recycled': dict(surplus),
+            }
+            self._export_plan_debug(_dbg)
+
         return plan
+
+    def _export_plan_debug(self, data: Dict[str, Any]) -> None:
+        """Write the full planning snapshot to a timestamped JSON file."""
+        try:
+            os.makedirs(self._debug_export_dir, exist_ok=True)
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+            path = os.path.join(self._debug_export_dir, f'plan_{ts}.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({'timestamp': ts, **data}, f, indent=2, default=str)
+            self.get_logger().info(f"[DEBUG] Plan exported → {path}")
+        except Exception as e:
+            self.get_logger().error(f"[DEBUG] Plan export failed: {e}")
 
     def _check_recycle_overflow(
         self, recycle_ids: list, net_aidlist: Counter

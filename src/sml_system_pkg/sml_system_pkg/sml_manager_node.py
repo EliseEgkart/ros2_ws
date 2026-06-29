@@ -30,7 +30,11 @@ from sml_system_pkg.arena_side_utils import (
     nav_target_for_station,
     side_to_fixed_workbench_station,
 )
-from sml_system_pkg.planning.planner_config import RAW_SLOT_INDICES
+from sml_system_pkg.planning.planner_config import (
+    ASSEMBLY_SLOT_INDICES,
+    PRODUCT_MATERIALS,
+    RAW_SLOT_INDICES,
+)
 
 
 ARM_ACTION_ASSEMBLE = 'ASSEMBLE'
@@ -460,6 +464,13 @@ class SmlManagerNode(Node):
 
         goal = NavTask.Goal()
         nav_target = self._assign_nav_goal_target(goal, int(step.station_id))
+        try:
+            assemble_jobs = self._build_amr_assemble_jobs(step)
+        except (RuntimeError, ValueError) as e:
+            self.get_logger().error(
+                f'[AMR ASSEMBLE] step {step.step_id} 명령 분리 실패: {e}')
+            self._set_amr_idle(step)
+            return
 
         with self._lock:
             self._amr_assemble_states[int(step.step_id)] = {
@@ -468,6 +479,8 @@ class SmlManagerNode(Node):
                 'failed': False,
                 'post_started': False,
                 'nav_target': nav_target,
+                'jobs': assemble_jobs,
+                'arm_slots': [],
             }
 
         self.get_logger().info(
@@ -506,6 +519,29 @@ class SmlManagerNode(Node):
     def _logical_slot_index(self, slide_id):
         sid = int(slide_id)
         return abs(sid) % 10
+
+    def _logical_order_index(self, slide_id):
+        return (abs(int(slide_id)) // 10) % 10
+
+    def _encode_arm_slide_id(self, physical_slide_id, order_index, sequence):
+        """
+        ARM 조립용 위치 ID:
+          slide_number * 1000 + position * 100 + order * 10 + sequence
+
+        raw 위치의 기존 표현은 ``slide_number * 10 + position``이고,
+        조립 슬롯(7/8)은 위치 0인 단일 slide로 취급한다.
+        """
+        physical_slide_id = int(physical_slide_id)
+        if 1 <= physical_slide_id <= 8:
+            slide_number, position = physical_slide_id, 0
+        else:
+            slide_number, position = divmod(physical_slide_id, 10)
+        return (
+            slide_number * 1000
+            + position * 100
+            + int(order_index) * 10
+            + int(sequence)
+        )
 
     def _is_raw_slot_index(self, slot_index):
         return int(slot_index) in self._arm_raw_slot_indices
@@ -728,6 +764,7 @@ class SmlManagerNode(Node):
         logical_slide_ids = list(getattr(step, 'slide_ids', []))
         object_ids = list(step.object_ids)
         converted = []
+        assemble_sequence_by_order = {}
 
         for idx, sid in enumerate(logical_slide_ids):
             slot_index = self._logical_slot_index(sid)
@@ -755,6 +792,14 @@ class SmlManagerNode(Node):
                 # Product slot and assembly slots are already physical slot numbers.
                 converted.append(slot_index)
 
+            if is_assemble:
+                order_index = self._logical_order_index(sid)
+                sequence = assemble_sequence_by_order.get(order_index, 0)
+                converted[-1] = self._encode_arm_slide_id(
+                    converted[-1], order_index, sequence
+                )
+                assemble_sequence_by_order[order_index] = sequence + 1
+
         self._arm_cmd_slide_cache[step_id] = list(converted)
         return converted
 
@@ -770,24 +815,81 @@ class SmlManagerNode(Node):
                 )
         return converted
 
-    def _send_amr_assemble_arm(self, step, nav_target, retry=0):
+    def _build_amr_assemble_jobs(self, step):
+        """Split one planner batch into one ARM request per assembly slot."""
+        product_ids = [int(value) for value in step.object_ids]
+        logical_slide_ids = [int(value) for value in step.slide_ids]
+        arm_slide_ids = self._convert_step_slide_ids_for_arm(
+            step, ARM_ACTION_ASSEMBLE
+        )
+        jobs = []
+        cursor = 0
+
+        for product_id in product_ids:
+            recipe_size = len(PRODUCT_MATERIALS.get(product_id, []))
+            if recipe_size <= 0:
+                raise RuntimeError(
+                    f'product={product_id}의 AMR 조립 recipe를 찾을 수 없습니다')
+
+            logical = logical_slide_ids[cursor:cursor + recipe_size]
+            encoded = arm_slide_ids[cursor:cursor + recipe_size]
+            if len(logical) != recipe_size or len(encoded) != recipe_size:
+                raise RuntimeError(
+                    f'product={product_id} 조립 위치 개수 불일치: '
+                    f'expected={recipe_size}, logical={logical}, encoded={encoded}')
+
+            target_slot = self._logical_slot_index(logical[0])
+            if target_slot not in ASSEMBLY_SLOT_INDICES:
+                raise RuntimeError(
+                    f'product={product_id}의 조립 슬롯이 7/8이 아닙니다: '
+                    f'target_slot={target_slot}')
+
+            jobs.append({
+                'product_id': product_id,
+                'target_slot': target_slot,
+                'logical_slide_ids': logical,
+                'arm_slide_ids': encoded,
+            })
+            cursor += recipe_size
+
+        if cursor != len(logical_slide_ids):
+            raise RuntimeError(
+                f'사용되지 않은 조립 slide_id가 있습니다: '
+                f'{logical_slide_ids[cursor:]}')
+        return jobs
+
+    def _send_amr_assemble_arm(self, step, nav_target, retry=0, job_index=0):
+        with self._lock:
+            state = self._amr_assemble_states.get(int(step.step_id), {})
+            jobs = list(state.get('jobs', []))
+
+        if not 0 <= int(job_index) < len(jobs):
+            self._fail_amr_assemble_step(
+                step, f'ARM 조립 job index 오류: {job_index}/{len(jobs)}')
+            return
+
+        job = jobs[int(job_index)]
         req = ArmCommand.Request()
         # Step.PRODUCE is retained only as the sml_msgs compatibility enum.
         req.action = ARM_ACTION_ASSEMBLE
-        req.object_ids = list(step.object_ids)
+        req.object_ids = [int(job['product_id'])]
         req.location = int(step.station_id)
-        req.station_id = int(step.station_id)
-        arm_slide_ids = self._set_arm_request_slide_ids(req, step, req.action)
+        # arm_controller_pkg는 ASSEMBLE의 station_id를 조립 슬롯으로 사용한다.
+        req.station_id = int(job['target_slot'])
+        req.slide_ids = list(job['arm_slide_ids'])
 
         self.get_logger().info(
-            f'[ARM/ASSEMBLE] step {step.step_id} → '
-            f'{req.action} product={list(step.object_ids)} | '
-            f'location={req.location} | arm_slide_ids={arm_slide_ids}'
+            f'[ARM/ASSEMBLE] step {step.step_id} '
+            f'조립 진행 {int(job_index) + 1}/{len(jobs)} → '
+            f'{req.action} product={req.object_ids} | '
+            f'target_slot={req.station_id} | location={req.location} | '
+            f'encoded_slide_ids={list(req.slide_ids)}'
         )
 
         future = self.arm_client.call_async(req)
         future.add_done_callback(
-            lambda f, s=step, r=retry: self._on_amr_assemble_arm_result(f, s, r))
+            lambda f, s=step, r=retry, j=job_index:
+            self._on_amr_assemble_arm_result(f, s, r, j))
 
     def _get_amr_assemble_nav_target(self, step):
         with self._lock:
@@ -841,7 +943,7 @@ class SmlManagerNode(Node):
             f'[NAV/ASSEMBLE] step {step.step_id} 도착 완료')
         self._mark_amr_assemble_part_done(step, 'nav')
 
-    def _on_amr_assemble_arm_result(self, future, step, retry):
+    def _on_amr_assemble_arm_result(self, future, step, retry, job_index=0):
         try:
             response = future.result()
         except Exception as e:
@@ -867,15 +969,35 @@ class SmlManagerNode(Node):
                 self.get_logger().warn(
                     f'[ARM/ASSEMBLE] step {step.step_id} 재시도 '
                     f'({retry+1}/1)')
-                self._send_amr_assemble_arm(step, nav_target, retry + 1)
+                self._send_amr_assemble_arm(
+                    step, nav_target, retry + 1, job_index)
             else:
                 self._fail_amr_assemble_step(
                     step, f'ARM ASSEMBLE 최종 실패: {message}')
             return
 
+        response_slots = list(response.slots)
+        with self._lock:
+            state = self._amr_assemble_states.get(int(step.step_id), {})
+            state.setdefault('arm_slots', []).extend(response_slots)
+            jobs = list(state.get('jobs', []))
+            all_slots = list(state.get('arm_slots', []))
+
         self.get_logger().info(
-            f'[ARM/ASSEMBLE] step {step.step_id} 조립 완료 '
-            f'| slots={list(response.slots)}')
+            f'[ARM/ASSEMBLE] step {step.step_id} '
+            f'job {job_index + 1}/{len(jobs)} 조립 완료 '
+            f'| slots={response_slots}')
+
+        next_job_index = int(job_index) + 1
+        if next_job_index < len(jobs):
+            nav_target = self._get_amr_assemble_nav_target(step)
+            self._send_amr_assemble_arm(
+                step, nav_target, retry=0, job_index=next_job_index)
+            return
+
+        self.get_logger().info(
+            f'[ARM/ASSEMBLE] step {step.step_id} 전체 조립 완료 '
+            f'| slots={all_slots}')
         self._commit_amr_assemble_slot_changes(step)
         self._mark_amr_assemble_part_done(step, 'arm')
 
@@ -939,17 +1061,18 @@ class SmlManagerNode(Node):
             req.action = 'LOAD'
         elif step.action == Step.UNLOAD:
             req.action = 'UNLOAD'
-        elif step.action == Step.PRODUCE:
-            req.action = ARM_ACTION_ASSEMBLE
         else:
             self.get_logger().error(
-                f'[ARM] step {step.step_id}: 지원하지 않는 action={step.action}')
+                f'[ARM] step {step.step_id}: 일반 ARM 경로는 '
+                f'LOAD/UNLOAD만 지원합니다 (action={step.action})')
             self._set_amr_idle(step)
             return
 
         all_object_ids = list(step.object_ids)
         req.object_ids = all_object_ids[object_offset:]
         req.location = int(step.station_id)
+        # 이 함수는 LOAD/UNLOAD 전용이다. ASSEMBLE의 station_id(7/8)는
+        # _send_amr_assemble_arm()에서 제품별 조립 슬롯으로 설정한다.
         req.station_id = int(step.station_id)
         all_arm_slide_ids = self._set_arm_request_slide_ids(
             req, step, req.action)

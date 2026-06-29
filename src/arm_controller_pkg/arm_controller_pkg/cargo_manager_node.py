@@ -16,7 +16,7 @@ MATERIAL_NAMES = {
 
 PRODUCT_SLOT = 1
 MATERIAL_SLOTS = [2, 3, 4, 5, 6]
-ASSEMBLY_SLOT = 8  # 조립 완료된 완성품이 놓이는 슬롯 (FIND_EMPTY 검색 대상 아님)
+ASSEMBLY_SLOTS = [7, 8]  # 이동 중 조립 슬롯 (FIND_EMPTY 검색 대상 아님)
 
 
 class CargoManagerNode(Node):
@@ -24,7 +24,10 @@ class CargoManagerNode(Node):
         super().__init__('cargo_manager_node')
         self.srv = self.create_service(Cargo, '/cargo', self.cargo_cb)
 
-        self.slot_state = {slot: None for slot in [PRODUCT_SLOT] + MATERIAL_SLOTS + [ASSEMBLY_SLOT]}
+        self.slot_state = {slot: None for slot in [PRODUCT_SLOT] + MATERIAL_SLOTS + ASSEMBLY_SLOTS}
+
+        # 커스터머 센터 delivery 상태: {station_id: {delivery_idx: object_id or None}}
+        self.delivery_state = {}
 
         self.get_logger().info('[CARGO] cargo_manager_node started')
         self.get_logger().info(f'[CARGO] slots: {list(self.slot_state.keys())}')
@@ -101,6 +104,58 @@ class CargoManagerNode(Node):
             response.success = True
             response.message = ' | '.join(lines)
             self.get_logger().info(f'[CARGO] STATUS: {response.message}')
+
+        elif action == 'FIND_DELIVERY_EMPTY':
+            station_id = request.station_id
+            station = self.delivery_state.setdefault(station_id, {})
+            for idx in range(6):
+                if station.get(idx) is None:
+                    response.success = True
+                    response.slot = idx
+                    response.message = f'empty delivery slot found: station={station_id}, idx={idx}'
+                    self.get_logger().info(f'[CARGO] {response.message}')
+                    return response
+            response.success = False
+            response.slot = -1
+            response.message = f'no empty delivery slot at station={station_id}'
+            self.get_logger().warn(f'[CARGO] {response.message}')
+
+        elif action == 'SET_DELIVERY':
+            station_id = request.station_id
+            idx = request.slot
+            station = self.delivery_state.setdefault(station_id, {})
+            prev = station.get(idx)
+            station[idx] = request.object_id
+            name = MATERIAL_NAMES.get(request.object_id, f'product_id={request.object_id}')
+            response.success = True
+            response.slot = idx
+            response.message = (
+                f'delivery updated: station={station_id}, idx={idx}: '
+                f'{prev} -> object_id={request.object_id} ({name})'
+            )
+            self.get_logger().info(f'[CARGO] {response.message}')
+
+        elif action == 'CLEAR_DELIVERY':
+            station_id = request.station_id
+            idx = request.slot
+            station = self.delivery_state.setdefault(station_id, {})
+            station[idx] = None
+            response.success = True
+            response.slot = idx
+            response.message = f'delivery cleared: station={station_id}, idx={idx}'
+            self.get_logger().info(f'[CARGO] {response.message}')
+
+        elif action == 'STATUS_DELIVERY':
+            station_id = request.station_id
+            station = self.delivery_state.get(station_id, {})
+            lines = []
+            for idx in range(6):
+                obj = station.get(idx)
+                name = MATERIAL_NAMES.get(obj, f'product_id={obj}') if obj is not None else 'empty'
+                lines.append(f'idx={idx}: {name}')
+            response.success = True
+            response.message = f'station={station_id} | ' + ' | '.join(lines)
+            self.get_logger().info(f'[CARGO] {response.message}')
 
         else:
             response.success = False

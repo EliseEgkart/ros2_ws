@@ -2,12 +2,14 @@
 
 WORKSPACE="${ROS2_WS:-$HOME/ros2_ws}"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
-CMD="$1"
-LOG_NAME="${2:-ros2}"
+PANE_ID=""
 
-LOG_DIR="$WORKSPACE/logs"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_${LOG_NAME}.log"
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+  PANE_ID="$1"
+  shift
+fi
+
+CMD="$*"
 
 cd "$WORKSPACE" || {
   echo "[ERROR] ROS2 workspace not found: $WORKSPACE"
@@ -36,7 +38,9 @@ echo "========================================"
 echo " ROS2 preset command"
 echo " Workspace : $WORKSPACE"
 echo " ROS distro: $ROS_DISTRO_NAME"
-echo " Log file  : $LOG_FILE"
+if [ -n "$PANE_ID" ]; then
+  echo " Pane      : $PANE_ID"
+fi
 echo "========================================"
 echo
 
@@ -47,7 +51,25 @@ fi
 read -e -i "$CMD" -p "$ " USER_CMD
 
 if [ -n "$USER_CMD" ]; then
-  eval "$USER_CMD" 2>&1 | tee -a "$LOG_FILE"
+  if [ -n "$PANE_ID" ] && [ -n "${ROBOCUP_RUN_LOG_DIR:-}" ]; then
+    LOG_DIR="$ROBOCUP_RUN_LOG_DIR"
+    mkdir -p "$LOG_DIR"
+    LOG_FILE="$LOG_DIR/$PANE_ID.log"
+
+    echo "[OK] logging to $LOG_FILE"
+    {
+      echo "========================================"
+      echo "Pane      : $PANE_ID"
+      echo "Started   : $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "Workspace : $WORKSPACE"
+      echo "Command   : $USER_CMD"
+      echo "========================================"
+      echo
+      eval "$USER_CMD"
+    } 2>&1 | tee "$LOG_FILE"
+  else
+    eval "$USER_CMD"
+  fi
 fi
 
 exec bash

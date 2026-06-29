@@ -428,7 +428,6 @@ class PlannerNode(Node):
         object_ids: list,
         location: int = 0,
         station_id: int = None,
-        slide_ids: list = None,
     ) -> bool:
         """Send one ArmCommand service call to the arm. Blocks until response."""
         self._arm_client.wait_for_service()
@@ -438,7 +437,6 @@ class PlannerNode(Node):
         req.object_ids = [int(x) for x in object_ids]
         req.location = int(location)
         req.station_id = int(station_id if station_id is not None else location)
-        req.slide_ids = [int(x) for x in (slide_ids or [])]
 
         future = self._arm_client.call_async(req)
         done = threading.Event()
@@ -450,16 +448,13 @@ class PlannerNode(Node):
         done.wait()
         return future.result().success
 
-    def arm_pick_material(
-        self, station_id: int, material_id: int, manipulator_slot: int
-    ) -> bool:
+    def arm_pick_material(self, station_id: int, material_id: int) -> bool:
         """Pick one material block from a storage station and place it on cargo."""
         return self._arm_call(
             ARM_PICK,
             object_ids=[material_id],
             location=station_id,
             station_id=station_id,
-            slide_ids=[manipulator_slot],
         )
 
     def arm_pick_product(self, station_id: int, product_id: int) -> bool:
@@ -469,28 +464,27 @@ class PlannerNode(Node):
             object_ids=[product_id],
             location=station_id,
             station_id=station_id,
-            slide_ids=[0],
         )
 
-    def arm_unload_material(
-        self, cargo_id: int, placement_idx: int, object_id: int
-    ) -> bool:
-        """Unload a material block from cargo (drop at workbench)."""
-        slot_value = cargo_id * 10 + placement_idx
+    def arm_unload_material(self, object_id: int) -> bool:
+        """Unload a material block from cargo to the workbench.
+        The arm locates the block via cargo_manager FIND_OBJECT."""
         return self._arm_call(
             ARM_PLACE,
             object_ids=[object_id],
             location=0,
-            slide_ids=[slot_value],
         )
 
-    def arm_deliver(self, from_cargo_id: int, product_id: int = 0) -> bool:
-        """Deliver a finished product from cargo to the customer counter."""
+    def arm_deliver(self, product_id: int, from_cargo_id: int = 0) -> bool:
+        """Deliver a finished product to the customer counter.
+        The arm locates the product via cargo_manager FIND_OBJECT."""
+        self.get_logger().info(
+            f"[ARM] deliver product_id={product_id} from cargo {from_cargo_id}"
+        )
         return self._arm_call(
             ARM_DELIVER,
             object_ids=[product_id],
             location=0,
-            slide_ids=[from_cargo_id],
         )
 
 

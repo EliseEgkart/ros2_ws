@@ -1,227 +1,137 @@
 """
-Tracks the physical state of cargo slots 2-6 (material storage).
+Planner-side cargo slot tracker (material storage, IDs 2-6).
 
-Cargo geometry (per slot, cargo IDs 2-6):
-  The tray is 2×6 studs wide.  Five placement positions are defined by
-  where the centre of a brick sits along the 6-stud axis:
+Mirrors the stack model used by cargo_manager_node so planning decisions
+(space checks, material lookup, workbench readiness) stay consistent with
+the arm's internal state.
 
-  Placement index | Block size | Centre stud column | Studs occupied
-  ----------------+-----------+--------------------+---------------
-       0          |   2×2     |        1           |  0-1
-       1          |   2×4     |        2           |  0-3
-       2          |   2×2     |        3           |  2-3
-       3          |   2×4     |        4           |  2-5
-       4          |   2×2     |        5           |  4-5
+Vertical stack model (bottom → top):
+  Each slot holds a list of object_ids ordered from bottom to top.
+  Block heights (in units):
+    2×2 blocks (IDs 1-4) = 2 units high
+    4×2 blocks (IDs 5-8) = 4 units high
+  Maximum stack height per slot = 6 units.
 
-  A 2×2 block uses placements {0, 2, 4}.
-  A 2×4 block uses placements {1, 3}.
-
-  Overlapping stud columns prevent combining certain placements:
-    placement 1 (cols 0-3) conflicts with placements 0 (cols 0-1) and 2 (cols 2-3).
-    placement 3 (cols 2-5) conflicts with placements 2 (cols 2-3) and 4 (cols 4-5).
-
-  The manipulator team value for a placed block is:  cargo_id * 10 + placement_index.
-  Preferred placements per manipulator team spec: prefer higher indices (3, 4) first.
-
-Cargo 1  — finished products (counted only, no slot tracking needed).
-Cargo 7/8 — managed by CargoAllocator (planning module).
+Cargo 1  — finished products at the customer counter (counted only).
+Cargo 7/8 — in-transit assembly, managed by CargoAllocator.
 """
 
 from typing import Dict, List, Optional, Tuple
 
-from robocup_planner.product_catalog import MATERIAL_SIZE
-
-# Stud columns occupied by each placement index
-_PLACEMENT_COLS: Dict[int, Tuple[int, int]] = {
-    0: (0, 1),
-    1: (0, 3),
-    2: (2, 3),
-    3: (2, 5),
-    4: (4, 5),
+BLOCK_HEIGHT: Dict[int, int] = {
+    1: 2, 2: 2, 3: 2, 4: 2,
+    5: 4, 6: 4, 7: 4, 8: 4,
 }
+MAX_STACK_HEIGHT = 6
 
-# Valid placement indices per block size
-_SIZE_PLACEMENTS: Dict[str, List[int]] = {
-    '2x2': [4, 2, 0],   # prefer rightmost (manipulator spec)
-    '2x4': [3, 1],      # prefer rightmost
-}
-
-
-def _cols_for(placement: int) -> set:
-    lo, hi = _PLACEMENT_COLS[placement]
-    return set(range(lo, hi + 1))
+MATERIAL_SLOTS = [2, 3, 4, 5, 6]
 
 
 class CargoSlot:
-    """One cargo tray (ID 2-6)."""
+    """One material cargo tray (IDs 2-6), modelled as a vertical stack."""
 
     def __init__(self, cargo_id: int):
         self.cargo_id = cargo_id
-        # placement_index -> material_id  (None = empty)
-        self._contents: Dict[int, Optional[int]] = {i: None for i in range(5)}
+        self._stack: List[int] = []
 
-    def _occupied_cols(self) -> set:
-        cols: set = set()
-        for idx, mat in self._contents.items():
-            if mat is not None:
-                cols |= _cols_for(idx)
-        return cols
+    def stack_height(self) -> int:
+        return sum(BLOCK_HEIGHT.get(obj, 2) for obj in self._stack)
 
-    def find_placement(self, material_id: int) -> Optional[int]:
-        """
-        Find the lowest (preferred) free placement index for this material.
-        Returns None if no space is available.
-        """
-        size = MATERIAL_SIZE.get(material_id, '2x2')
-        occupied = self._occupied_cols()
-        for idx in _SIZE_PLACEMENTS[size]:
-            if not _cols_for(idx).intersection(occupied):
-                return idx
-        return None
+    def has_space(self, material_id: int) -> bool:
+        needed = BLOCK_HEIGHT.get(material_id, 2)
+        return self.stack_height() + needed <= MAX_STACK_HEIGHT
 
-    def place(self, material_id: int, placement_idx: int) -> int:
-        """
-        Place material at placement_idx.
-        Returns the manipulator value: cargo_id * 10 + placement_idx.
-        """
-        self._contents[placement_idx] = material_id
-        return self.cargo_id * 10 + placement_idx
+    def place(self, material_id: int) -> None:
+        self._stack.append(material_id)
 
-    def remove(self, placement_idx: int) -> None:
-        """Remove block at placement_idx; blocks at higher indices slide down the ramp."""
-        if self._contents.get(placement_idx) is None:
-            return
-        self._contents[placement_idx] = None
+    def remove(self, material_id: int) -> None:
+        if material_id in self._stack:
+            self._stack.remove(material_id)
 
-        # Collect blocks above the removed position (higher index = higher on ramp).
-        # Process ascending so lower blocks are re-placed first, freeing space for higher ones.
-        to_slide = sorted(
-            [(idx, mat) for idx, mat in self._contents.items()
-             if idx > placement_idx and mat is not None]
-        )
-        if not to_slide:
-            return
+    def has(self, material_id: int) -> bool:
+        return material_id in self._stack
 
-        for idx, _ in to_slide:
-            self._contents[idx] = None
+    @property
+    def contents(self) -> List[int]:
+        return list(self._stack)
 
-        for old_idx, mat_id in to_slide:
-            size = MATERIAL_SIZE.get(mat_id, '2x2')
-            occupied = self._occupied_cols()
-            placed = False
-            for candidate in sorted(_SIZE_PLACEMENTS[size]):  # lowest first
-                if candidate < old_idx and not _cols_for(candidate).intersection(occupied):
-                    self._contents[candidate] = mat_id
-                    placed = True
-                    break
-            if not placed:
-                self._contents[old_idx] = mat_id  # no lower position available, stay
-
-    def contents(self) -> List[Tuple[int, int]]:
-        """List of (placement_idx, material_id) for occupied placements."""
-        return [(idx, mat) for idx, mat in self._contents.items() if mat is not None]
-
+    @property
     def is_empty(self) -> bool:
-        return all(v is None for v in self._contents.values())
-
-    def is_full(self) -> bool:
-        """True if neither a 2×2 nor 2×4 block can be placed."""
-        return self.find_placement(1) is None and self.find_placement(5) is None
+        return len(self._stack) == 0
 
 
 class CargoManager:
-    """
-    Manages material cargo slots 2-6 and the finished-product count on cargo 1.
-    Cargo 7/8 (in-transit assembly) are tracked by CargoAllocator.
-    """
-
-    MATERIAL_CARGO_IDS = list(range(2, 7))  # [2, 3, 4, 5, 6]
+    """Planner-side view of material slots 2-6 and the finished-product counter."""
 
     def __init__(self):
         self._slots: Dict[int, CargoSlot] = {
-            i: CargoSlot(i) for i in self.MATERIAL_CARGO_IDS
+            slot_id: CargoSlot(slot_id) for slot_id in MATERIAL_SLOTS
         }
-        self.finished_on_cargo1: int = 0  # products sitting on cargo 1
-
-    # ------------------------------------------------------------------
-    # Placement
-    # ------------------------------------------------------------------
+        self.finished_on_cargo1: int = 0
 
     def place_material(self, material_id: int) -> Optional[int]:
-        """
-        Find the first available cargo slot (2-6) and place the material.
-        Returns the manipulator value (cargo_id*10 + placement) or None if full.
-        """
-        for cargo_id in self.MATERIAL_CARGO_IDS:
-            slot = self._slots[cargo_id]
-            placement = slot.find_placement(material_id)
-            if placement is not None:
-                return slot.place(material_id, placement)
+        """Place material in the first slot with enough space. Returns cargo_id or None."""
+        for slot_id in MATERIAL_SLOTS:
+            slot = self._slots[slot_id]
+            if slot.has_space(material_id):
+                slot.place(material_id)
+                return slot_id
         return None
 
-    def all_full(self) -> bool:
-        """True if every material cargo slot is full."""
-        return all(s.is_full() for s in self._slots.values())
-
-    def remove_material(self, cargo_id: int, placement_idx: int) -> None:
-        if cargo_id in self._slots:
-            self._slots[cargo_id].remove(placement_idx)
-
-    # ------------------------------------------------------------------
-    # Content queries
-    # ------------------------------------------------------------------
-
-    def all_materials(self) -> List[Tuple[int, int, int]]:
-        """All (cargo_id, placement_idx, material_id) currently stored."""
-        result = []
-        for cargo_id, slot in self._slots.items():
-            for idx, mat in slot.contents():
-                result.append((cargo_id, idx, mat))
-        return result
+    def remove_material(self, cargo_id: int, material_id: int) -> None:
+        slot = self._slots.get(cargo_id)
+        if slot:
+            slot.remove(material_id)
 
     def find_materials_for_product(
         self, product_id: int
-    ) -> Optional[List[Tuple[int, int, int]]]:
+    ) -> Optional[List[Tuple[int, int]]]:
         """
-        Check if all materials for product_id are present in cargo 2-6.
-        Returns list of (cargo_id, placement_idx, material_id) covering
-        exactly the required materials, or None if not all are available.
+        Return [(cargo_id, material_id)] covering all blocks required by product_id,
+        or None if the materials are not all present.
         """
-        from collections import Counter
-        from robocup_planner.product_catalog import get_material_count
+        from robocup_planner.product_catalog import get_build_order
+        needed = list(get_build_order(product_id))
 
-        needed = get_material_count(product_id)
-        available: List[Tuple[int, int, int]] = []
+        available: Dict[int, List[int]] = {
+            cid: list(slot.contents) for cid, slot in self._slots.items()
+        }
 
-        remaining = Counter(needed)
-        for cargo_id, placement_idx, mat_id in self.all_materials():
-            if remaining.get(mat_id, 0) > 0:
-                available.append((cargo_id, placement_idx, mat_id))
-                remaining[mat_id] -= 1
-                if remaining[mat_id] == 0:
-                    del remaining[mat_id]
-
-        return available if not remaining else None
+        result: List[Tuple[int, int]] = []
+        for mat_id in needed:
+            found = False
+            for cid, contents in available.items():
+                if mat_id in contents:
+                    contents.remove(mat_id)
+                    result.append((cid, mat_id))
+                    found = True
+                    break
+            if not found:
+                return None
+        return result
 
     def can_assemble_for_workbench(
-        self, workbench_product_ids: List[int]
+        self, pending_products: List[int]
     ) -> Optional[int]:
-        """
-        Return the first product_id from workbench_product_ids whose
-        materials are all available in cargo 2-6, or None.
-        """
-        for pid in workbench_product_ids:
+        """Return the first product_id whose materials are fully loaded, or None."""
+        for pid in pending_products:
             if self.find_materials_for_product(pid) is not None:
                 return pid
         return None
 
-    # ------------------------------------------------------------------
-    # Finished product tracking (cargo 1)
-    # ------------------------------------------------------------------
+    def all_materials(self) -> List[Tuple[int, int]]:
+        """Return all (cargo_id, material_id) pairs currently on cargo 2-6."""
+        result = []
+        for cid, slot in self._slots.items():
+            for mat_id in slot.contents:
+                result.append((cid, mat_id))
+        return result
+
+    def is_any_slot_available(self, material_id: int) -> bool:
+        return any(slot.has_space(material_id) for slot in self._slots.values())
 
     def add_finished_product(self) -> None:
         self.finished_on_cargo1 += 1
 
     def consume_finished_product(self) -> None:
-        if self.finished_on_cargo1 > 0:
-            self.finished_on_cargo1 -= 1
+        self.finished_on_cargo1 = max(0, self.finished_on_cargo1 - 1)

@@ -27,7 +27,7 @@ VISION_LOAD_JOINT_DEG = np.array([-90.0,  13.28,  75.45, 0.0, 91.27, 0.0])
 SLOT_COMMON_WPS = [
     np.array([-90.0,    13.70,   69.94, 0.0,  96.36,  0.0]),
     np.array([-90.0,   -20.81,  107.71, 0.0,  93.11,  0.0]),
-    np.array([-160.24, -33.11,  115.37, 0.0,  97.76,  0.0]),
+    np.array([-160.21, -8.27,  125.95, 0.46,  60.24,  0.0]),
     np.array([-220.0,  -11.96,   57.40, 0.0, 100.40,  0.0]),
 ]
 
@@ -112,7 +112,8 @@ Z_MARGIN = 40.0
 SCAN_Y_OFFSETS_MM = [0.0, 200.0, -200.0]
 SCAN_Y_AXIS_INDEX = 1
 SCAN_SETTLE_TIME_SEC = 0.3
-SCAN_VISION_RETRIES_PER_POSE = 1
+SCAN_VISION_RETRIES_PER_POSE = 3
+SCAN_MAX_CYCLES = 3
 PRODUCT_VERIFY_SETTLE_TIME_SEC = 0.3
 PRODUCT_VERIFY_VISION_RETRIES = 1
 # 파지(grip) 직전, 이동 정지 후 기계 진동이 잦아들 시간(초). 최소값으로 잡음.
@@ -221,11 +222,31 @@ BLOCK_H_MM         = 19.0   # 블록 1개 높이 (mm)
 # UNLOAD 픽업용 슬롯 조인트 (direct move_j, 중간 웨이포인트 없음)
 # 키: slot 번호 (슬롯 2~6)
 UNLOAD_SLOT_JOINTS = {
-    2: np.array([-266.65,-10.78, 60.26, -1.40, 107.07, 2.67]),
-    3: np.array([-246.79, -8.18, 58.19, -9.5, 107.99, 18.52]),
-    4: np.array([-231.78, -1.0, 51.34, -15.23, 110.13, 30.48]),
-    5: np.array([-210.75, -15.79, 65.59, -22.38, 115.86, 46.85]),
-    6: np.array([-228.30, -25.67, 71.33, -16.99, 114.78, 31.97]),
+    20: np.array([-266.65,-10.78, 60.26, -1.40, 107.07, 2.67]),
+    21: np.array([-266.87, -7.18, 55.88, -1.31, 107.85, 2.47]),
+    22: np.array([-267.06, -3.39, 51.06, -1.24, 108.88, 2.3]),
+    23: np.array([-267.23, 0.65, 45.68, -1.18, 110.22, 2.14]),
+    24: np.array([-267.38, 5.07, 39.51, -1.13, 111.96, 1.98]),
+    30: np.array([-246.79, -8.18, 58.19, -9.5, 107.99, 18.52]),
+    31: np.array([-248.19, -4.65, 53.71, -9.0, 108.77, 17.25]),
+    32: np.array([-249.43, -0.91, 48.75, -8.56, 109.83, 16.07]),
+    33: np.array([-250.55, 3.14, 43.16, -8.18, 111.23, 14.97]),
+    34: np.array([-251.55, 7.64, 36.67, -7.88, 113.10, 13.91]),
+    40: np.array([-231.78, -1.0, 51.34, -15.23, 110.13, 30.48]),
+    41: np.array([-233.70, 2.51, 46.39, -14.67, 111.15, 28.58]),
+    42: np.array([-235.45, 6.37, 40.76, -14.18, 112.53, 26.75]),
+    43: np.array([-237.06, 10.76, 34.14, -13.78, 114.42, 24.94]),
+    44: np.array([-238.53, 16.09, 25.78, -13.53, 117.13, 23.05]),
+    50: np.array([-210.75, -15.79, 65.59, -22.38, 115.86, 46.85]),
+    51: np.array([-214.49, -13.46, 62.51, -21.35, 115.50, 43.62]),
+    52: np.array([-217.91, -10.93, 59.16, -20.37, 115.36, 40.63]),
+    53: np.array([-221.04, -8.21, 55.51, -19.45, 115.44, 37.87]),
+    54: np.array([-223.89, -5.26, 51.50, -18.61, 115.76, 35.31]),
+    60: np.array([-228.30, -25.67, 71.33, -16.99, 114.78, 31.97]),
+    61: np.array([-232.32, -22.33, 68.38, -15.49, 114.16, 28.85]),
+    62: np.array([-235.12, -19.44, 65.21, -14.21, 113.81, 26.18]),
+    63: np.array([-238.61, -16.42, 61.78, -13.11, 113.71, 23.89]),
+    64: np.array([-241.08, -13.25, 58.07, -12.17, 113.86, 21.89]),
 }
 
 MATERIAL_NAMES = {
@@ -416,33 +437,37 @@ class AmrRobotNode(Node):
     def call_vision_with_y_scan(self, target_color):
         current_y_offset = 0.0
 
-        for target_y_offset in SCAN_Y_OFFSETS_MM:
-            delta_y = target_y_offset - current_y_offset
-            if abs(delta_y) > 1e-6:
-                if not self.move_l_rel_checked(
-                    self._scan_y_delta(delta_y),
-                    label=f'scan y offset {target_y_offset:.0f}mm',
-                ):
-                    self.get_logger().error(
-                        f'[AMR] scan move failed: y={target_y_offset:.0f}mm')
-                    self.return_scan_center(current_y_offset)
-                    return None
-                current_y_offset = target_y_offset
+        for cycle in range(SCAN_MAX_CYCLES):
+            self.get_logger().info(f'[AMR] vision scan cycle {cycle + 1}/{SCAN_MAX_CYCLES}')
+            for target_y_offset in SCAN_Y_OFFSETS_MM:
+                delta_y = target_y_offset - current_y_offset
+                if abs(delta_y) > 1e-6:
+                    if not self.move_l_rel_checked(
+                        self._scan_y_delta(delta_y),
+                        label=f'scan y offset {target_y_offset:.0f}mm',
+                    ):
+                        self.get_logger().error(
+                            f'[AMR] scan move failed: y={target_y_offset:.0f}mm')
+                        self.return_scan_center(current_y_offset)
+                        return None
+                    current_y_offset = target_y_offset
 
-            time.sleep(SCAN_SETTLE_TIME_SEC)
-            self.get_logger().info(
-                f'[AMR] vision scan at y_offset={current_y_offset:.0f}mm')
-
-            res = self.call_vision(
-                target_color,
-                retries=SCAN_VISION_RETRIES_PER_POSE,
-            )
-            if res:
+                time.sleep(SCAN_SETTLE_TIME_SEC)
                 self.get_logger().info(
-                    f'[AMR] vision success at y_offset={current_y_offset:.0f}mm')
-                return res
+                    f'[AMR] vision scan at y_offset={current_y_offset:.0f}mm')
 
-        self.get_logger().warn('[AMR] vision scan failed at all y offsets')
+                res = self.call_vision(
+                    target_color,
+                    retries=SCAN_VISION_RETRIES_PER_POSE,
+                )
+                if res:
+                    self.get_logger().info(
+                        f'[AMR] vision success at y_offset={current_y_offset:.0f}mm')
+                    return res
+
+            self.get_logger().warn(f'[AMR] vision scan cycle {cycle + 1} failed')
+
+        self.get_logger().warn('[AMR] vision scan failed at all cycles')
         if not self.return_scan_center(current_y_offset):
             self.get_logger().error('[AMR] failed to return scan center')
         return None
@@ -458,11 +483,12 @@ class AmrRobotNode(Node):
         self.get_logger().error(f'[GRIPPER] {action_name} failed')
         return False
 
-    def call_cargo(self, action, slot=0, object_id=0):
+    def call_cargo(self, action, slot=0, object_id=0, station_id=0):
         req = Cargo.Request()
         req.action = action
         req.slot = slot
         req.object_id = object_id
+        req.station_id = station_id
         return self.call_service(self.cargo_client, req)
 
     # --- 로봇 이동 헬퍼 ---
@@ -555,7 +581,7 @@ class AmrRobotNode(Node):
 
     # --- 웨이포인트 이동 (action별 테이블을 인자로 받음) ---
 
-    def move_to_slot(self, slot, for_unload=False):
+    def move_to_slot(self, slot, for_unload=False, layer_index=0):
         waypoints = SLOT_WAYPOINTS.get(slot)
         if waypoints is None:
             self.get_logger().error(f'[AMR] no waypoints for slot={slot}')
@@ -568,9 +594,9 @@ class AmrRobotNode(Node):
         # 정방향 첫 번째 waypoint는 HOME_JOINT_DEG라서 스킵한다.
         move_waypoints = list(waypoints[1:])
 
-        # UNLOAD 시 UNLOAD_SLOT_JOINTS에 정의된 슬롯(2~6)은 마지막 위치만 교체한다.
+        # UNLOAD 시 마지막 위치를 레이어별 UNLOAD_SLOT_JOINTS로 교체한다.
         if for_unload:
-            unload_joint = UNLOAD_SLOT_JOINTS.get(slot)
+            unload_joint = UNLOAD_SLOT_JOINTS.get(slot * 10 + layer_index)
             if unload_joint is not None:
                 move_waypoints[-1] = unload_joint
 
@@ -920,8 +946,7 @@ class AmrRobotNode(Node):
 
         try:
             if action == 'LOAD':
-                results = self.sequence_load_multi(
-                    list(request.object_ids), list(request.slide_ids))
+                results = self.sequence_load_multi(list(request.object_ids))
             elif action == 'UNLOAD':
                 results = self.sequence_unload_multi(
                     list(request.object_ids), request.station_id)
@@ -948,18 +973,12 @@ class AmrRobotNode(Node):
 
     # --- LOAD 시퀀스 ---
 
-    def sequence_load_multi(self, object_ids, slide_ids=None):
-        # slide_ids encoding: cargo_id * 10 + placement_idx  →  cargo slot = slide_id // 10
-        target_slots = []
-        if slide_ids and len(slide_ids) == len(object_ids):
-            target_slots = [sid // 10 for sid in slide_ids]
-
+    def sequence_load_multi(self, object_ids):
         results = []
         last_idx = len(object_ids) - 1
         for idx, object_id in enumerate(object_ids):
             is_last = (idx == last_idx)
-            target_slot = target_slots[idx] if target_slots else None
-            result = self.sequence_load(object_id, is_last=is_last, target_slot=target_slot)
+            result = self.sequence_load(object_id, is_last=is_last)
             results.append(result)
             if not result['success']:
                 self.get_logger().error(f'[AMR] load failed at object_id={object_id}, stopping')
@@ -977,7 +996,7 @@ class AmrRobotNode(Node):
         self.go_moving_pose()
         return results
 
-    def sequence_load(self, object_id, is_last=False, target_slot=None):
+    def sequence_load(self, object_id, is_last=False):
         if not self.is_robot_ready():
             return {
                 'success': False,
@@ -1000,23 +1019,19 @@ class AmrRobotNode(Node):
 
         self.get_logger().info(f'[LOAD START] object_id={object_id}, target={target_color}')
 
-        # 1. 목표 슬롯 결정: planner가 slide_ids를 지정한 경우 그대로 사용,
-        #    아니면 cargo_manager에서 FIND_EMPTY로 찾는다.
-        if target_slot is not None:
-            slot = target_slot
-            self.get_logger().info(f'[CARGO] using planner-assigned slot: {slot}')
-        else:
-            res = self.call_cargo('FIND_EMPTY', object_id=object_id)
-            if not res or not res.success:
-                self.get_logger().error('[AMR] no empty slot')
-                return {
-                    'success': False,
-                    'slot': -1,
-                    'object_id': object_id,
-                    'message': 'no empty slot',
-                }
-            slot = res.slot
-            self.get_logger().info(f'[CARGO] empty slot found: {slot}')
+        # 1. 빈 슬롯 확인 (cargo_manager가 layer_index 포함하여 반환)
+        res = self.call_cargo('FIND_EMPTY', object_id=object_id)
+        if not res or not res.success:
+            self.get_logger().error('[AMR] no empty slot')
+            return {
+                'success': False,
+                'slot': -1,
+                'object_id': object_id,
+                'message': 'no empty slot',
+            }
+        slot = res.slot
+        layer_index = res.layer_index
+        self.get_logger().info(f'[CARGO] empty slot: slot={slot}, layer_index={layer_index}')
 
         # 2. 초기화
         if not self.call_gripper(False):
@@ -1279,7 +1294,8 @@ class AmrRobotNode(Node):
                 'message': f'object not found: {object_id}',
             }
         slot = res.slot
-        self.get_logger().info(f'[CARGO] object found: slot={slot}')
+        layer_index = res.layer_index
+        self.get_logger().info(f'[CARGO] object found: slot={slot}, layer_index={layer_index}')
 
         # 2. 초기화
         if not self.call_gripper(False):
@@ -1298,8 +1314,8 @@ class AmrRobotNode(Node):
                 'message': 'go_home failed',
             }
 
-        # 3. 웨이포인트 순서대로 슬롯으로 이동 (UNLOAD 전용 마지막 위치 사용)
-        if not self.move_to_slot(slot, for_unload=True):
+        # 3. 웨이포인트 순서대로 슬롯으로 이동 (레이어별 UNLOAD 위치 사용)
+        if not self.move_to_slot(slot, for_unload=True, layer_index=layer_index):
             self.go_home()
             return {
                 'success': False,
@@ -1455,6 +1471,7 @@ class AmrRobotNode(Node):
                     f'[AMR] assemble failed at product_id={product_id}, stopping')
                 break
 
+        self.return_from_slot(target_slot)
         self.go_home()
         self.go_moving_pose()
         return results
@@ -1522,8 +1539,9 @@ class AmrRobotNode(Node):
                     'message': f'material {material_id} not found in cargo at layer={layer_index}',
                 }
             slot = res.slot
+            cargo_layer = res.layer_index
             self.get_logger().info(
-                f'[ASSEMBLE] material_id={material_id} -> slot={slot}')
+                f'[ASSEMBLE] material_id={material_id} -> slot={slot}, cargo_layer={cargo_layer}')
 
             # 3. 그리퍼 열기
             if not self.call_gripper(False):
@@ -1535,20 +1553,20 @@ class AmrRobotNode(Node):
                     'message': f'gripper open failed at layer={layer_index}',
                 }
 
-            # 4. 조립용 슬롯 조인트로 직접 이동 (조립 위치에서 출발)
-            slot_joint = UNLOAD_SLOT_JOINTS.get(slot)
+            # 4. 재료 슬롯으로 이동 (cargo_layer 기준 픽업 위치)
+            slot_joint = UNLOAD_SLOT_JOINTS.get(slot * 10 + cargo_layer)
             if slot_joint is None:
                 self.get_logger().error(
-                    f'[AMR] no unload slot joint for slot={slot} layer={layer_index}')
+                    f'[AMR] no unload slot joint for slot={slot} cargo_layer={cargo_layer}')
                 self.go_home()
                 return {
                     'success': False,
                     'slot': slot,
                     'object_id': product_id,
-                    'message': f'no assembly slot joint for slot={slot}',
+                    'message': f'no assembly slot joint for slot={slot} cargo_layer={cargo_layer}',
                 }
             if not self.move_j_checked(
-                slot_joint, label=f'assemble to slot={slot} layer={layer_index}'
+                slot_joint, label=f'assemble to slot={slot} cargo_layer={cargo_layer}'
             ):
                 self.go_home()
                 return {

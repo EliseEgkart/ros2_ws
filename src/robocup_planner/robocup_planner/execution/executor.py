@@ -153,26 +153,25 @@ class Executor:
 
             # Pick each required material from this station.
             for mat_id in entry['pickup_materials']:
-                placement_value = self._decide_placement(mat_id)
+                cargo_id = self._decide_placement(mat_id)
 
-                if placement_value is None:
+                if cargo_id is None:
                     # Cargo 2-6 full and no material fits — divert to workbench now.
                     self._log("  ! cargo full — diverting to workbench before pickup")
                     self._divert_to_workbench(forced=True)
-                    placement_value = self._decide_placement(mat_id)
-                    if placement_value is None:
+                    cargo_id = self._decide_placement(mat_id)
+                    if cargo_id is None:
                         self._log(f"  !! still no space for mat {mat_id} — skipping")
                         continue
                     # Re-navigate to the storage station after the workbench detour.
                     self._node.navigate(entry['station_id'])
 
-                self._log(f"  → pick mat {mat_id} → placement {placement_value}")
+                self._log(f"  → pick mat {mat_id} → cargo {cargo_id}")
                 self._node.arm_pick_material(
                     station_id=entry['station_id'],
                     material_id=mat_id,
-                    manipulator_slot=placement_value,
                 )
-                self._on_material_placed(mat_id, placement_value)
+                self._on_material_placed(mat_id, cargo_id)
 
             self._mid_cursor += 1
 
@@ -189,23 +188,21 @@ class Executor:
 
     def _decide_placement(self, material_id: int) -> Optional[int]:
         """
-        Returns the manipulator slot value for placing material_id, or None
+        Returns the cargo_id (2-8) where material_id will be placed, or None
         if no space is available anywhere.
 
         Priority:
           1. Cargo 7/8 if waiting for this block as the next in build order.
-          2. Cargo 2-6 lowest-preferred free position.
+          2. Cargo 2-6 first slot with enough stack space.
         """
         cargo_intransit = self._allocator.find_slot_for_block(material_id)
         if cargo_intransit is not None:
-            # In-transit cargo uses placement index 0 (single stack position).
-            return cargo_intransit * 10 + 0
+            return cargo_intransit
 
         return self._cargo.place_material(material_id)
 
-    def _on_material_placed(self, material_id: int, placement_value: int) -> None:
+    def _on_material_placed(self, material_id: int, cargo_id: int) -> None:
         """Update state after a block is successfully placed."""
-        cargo_id = placement_value // 10
         if cargo_id in (7, 8):
             complete = self._allocator.confirm_placed(cargo_id, material_id)
             if complete:
@@ -262,15 +259,15 @@ class Executor:
         slots = self._cargo.find_materials_for_product(product_id)
         if slots is None:
             return
-        for cargo_id, placement_idx, mat_id in slots:
-            self._node.arm_unload_material(cargo_id, placement_idx, mat_id)
-            self._cargo.remove_material(cargo_id, placement_idx)
+        for cargo_id, mat_id in slots:
+            self._node.arm_unload_material(mat_id)
+            self._cargo.remove_material(cargo_id, mat_id)
 
     def _unload_all_materials(self) -> None:
         """Drop everything in cargo 2-6 at the workbench (overflow buffer)."""
-        for cargo_id, placement_idx, mat_id in list(self._cargo.all_materials()):
-            self._node.arm_unload_material(cargo_id, placement_idx, mat_id)
-            self._cargo.remove_material(cargo_id, placement_idx)
+        for cargo_id, mat_id in list(self._cargo.all_materials()):
+            self._node.arm_unload_material(mat_id)
+            self._cargo.remove_material(cargo_id, mat_id)
 
     # ------------------------------------------------------------------
     # Delivery
@@ -290,7 +287,7 @@ class Executor:
         while self._cargo.finished_on_cargo1 > 0:
             product_id = self._cargo1_queue.pop(0) if self._cargo1_queue else 0
             self._log(f"  → deliver product {product_id} from cargo 1")
-            self._node.arm_deliver(from_cargo_id=1, product_id=product_id)
+            self._node.arm_deliver(product_id=product_id, from_cargo_id=1)
             self._cargo.consume_finished_product()
             self._pending_deliveries -= 1
 
@@ -299,7 +296,7 @@ class Executor:
             self._log(
                 f"  → deliver in-transit product {slot.product_id} from cargo {slot.cargo_id}"
             )
-            self._node.arm_deliver(from_cargo_id=slot.cargo_id, product_id=slot.product_id)
+            self._node.arm_deliver(product_id=slot.product_id, from_cargo_id=slot.cargo_id)
             self._allocator.free_slot(slot.cargo_id)
             self._pending_deliveries -= 1
 

@@ -5,6 +5,7 @@ robocup_planner:
     wb_action: "wb_task"
     arm_service: "/amr_robot_command"
     wb_ready_topic: "/workbench/product_ready"
+    post_process_service: "/robocup_navigator/post_process"
     driving_velocity: 0.5
     parking_duration: 1.5
     exiting_duration: 1.0

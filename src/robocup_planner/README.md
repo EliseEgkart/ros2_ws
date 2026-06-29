@@ -37,6 +37,7 @@ RoboCup SML 경기용 계획·실행 통합 노드.
 | Sub | `/sml/task` | `sml_msgs/msg/Task` | 주문 수신 트리거 |
 | Sub | `/workbench/product_ready` | `std_msgs/Int32` | 워크벤치 완료 신호 |
 | Act | `navigate_to_station` | `sml_msgs/action/NavTask` | AMR 이동 |
+| Srv | `/robocup_navigator/post_process` | `std_srvs/srv/Trigger` | station 작업 후 후진/회전 이탈 |
 | Act | `wb_task` | `sml_msgs/action/WbTask` | 워크벤치 조립/분해 |
 | Srv | `/amr_robot_command` | `sml_msgs/srv/ArmCommand` | 로봇팔 제어 |
 
@@ -75,6 +76,7 @@ cargo 7/8에는 `is_intransit_eligible` 조건을 만족하는 제품만 할당�
 |---|---|---|
 | `task_topic` | `/sml/task` | 주문 수신 토픽 |
 | `nav_action` | `navigate_to_station` | 내비게이션 액션 이름 |
+| `post_process_service` | `/robocup_navigator/post_process` | station 작업 후 이탈 서비스 |
 | `wb_action` | `wb_task` | 워크벤치 액션 이름 |
 | `arm_service` | `/amr_robot_command` | 로봇팔 서비스 이름 |
 | `wb_ready_topic` | `/workbench/product_ready` | 워크벤치 완료 토픽 |

@@ -183,6 +183,7 @@ class Executor:
                 if cargo_id is None:
                     # Cargo 2-6 full and no material fits — divert to workbench now.
                     self._log("  ! cargo full — diverting to workbench before pickup")
+                    self._node.call_post_process()
                     self._divert_to_workbench(forced=True)
                     cargo_id = self._decide_placement(mat_id)
                     if cargo_id is None:

@@ -61,8 +61,8 @@ waypoints:
       w: 0.707107
   station_13_sub_goal:
     position:
-      x: 1.1
-      y: -2.5
+      x: 1.027558
+      y: -2.502347
       z: 0.0
     orientation:
       x: 0.0
@@ -71,8 +71,8 @@ waypoints:
       w: 0.707107
   station_13_goal:
     position:
-      x: 1.1
-      y: -3.0
+      x: 1.027558
+      y: -3.032602
       z: 0.0
     orientation:
       x: 0.0

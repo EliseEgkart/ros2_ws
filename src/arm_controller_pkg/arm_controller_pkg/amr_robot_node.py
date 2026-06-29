@@ -193,8 +193,12 @@ def get_pick_offset(object_id):
     return off
 
 # --- UNLOAD Z 상수 (슬롯에서 물체 집을 때, 슬롯 2~6) ---
-UNLOAD_Z_DOWN_MM = 55.0
-UNLOAD_Z_UP_MM = -55.0
+UNLOAD_Z_DOWN_MM = 70.0
+UNLOAD_Z_UP_MM = -70.0
+
+# --- 슬롯 1 전용 Z 상수 (LOAD/UNLOAD 공통) ---
+SLOT1_Z_DOWN_MM = 30.0
+SLOT1_Z_UP_MM   = -30.0
 
 # --- UNLOAD X 상수 (슬롯 7/8 언로드 시 Tool X 방향 이동) ---
 UNLOAD_X_DOWN_MM = 90.0
@@ -1187,8 +1191,10 @@ class AmrRobotNode(Node):
             }
 
         # 9. Z 하강 -> open -> Z 상승
+        place_z_down = SLOT1_Z_DOWN_MM if slot == 1 else LOAD_Z_DOWN_MM
+        place_z_up   = SLOT1_Z_UP_MM   if slot == 1 else LOAD_Z_UP_MM
         if not self.move_l_rel_checked(
-            [0.0, 0.0, LOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+            [0.0, 0.0, place_z_down, 0.0, 0.0, 0.0],
             label='place z down',
         ):
             self.go_home()
@@ -1202,7 +1208,7 @@ class AmrRobotNode(Node):
         if not self.call_gripper(False):
             self.get_logger().error('[AMR] final gripper open failed')
             self.move_l_rel_checked(
-                [0.0, 0.0, LOAD_Z_UP_MM, 0.0, 0.0, 0.0],
+                [0.0, 0.0, place_z_up, 0.0, 0.0, 0.0],
                 label='retreat after open failure',
             )
             self.go_home()
@@ -1214,7 +1220,7 @@ class AmrRobotNode(Node):
             }
 
         if not self.move_l_rel_checked(
-            [0.0, 0.0, LOAD_Z_UP_MM, 0.0, 0.0, 0.0],
+            [0.0, 0.0, place_z_up, 0.0, 0.0, 0.0],
             label='place z up',
         ):
             self.go_home()
@@ -1324,6 +1330,9 @@ class AmrRobotNode(Node):
             x_dir = UNLOAD_SLOT_X_DIR.get(slot, 1.0)
             pick_down = [UNLOAD_X_DOWN_MM * x_dir, 0.0, 0.0, 0.0, 0.0, 0.0]
             pick_up   = [UNLOAD_X_UP_MM   * x_dir, 0.0, 0.0, 0.0, 0.0, 0.0]
+        elif slot == 1:
+            pick_down = [0.0, 0.0, SLOT1_Z_DOWN_MM, 0.0, 0.0, 0.0]
+            pick_up   = [0.0, 0.0, SLOT1_Z_UP_MM,   0.0, 0.0, 0.0]
         else:
             pickup_z_down = ASSEMBLY_Z_DOWN_MM if is_product else UNLOAD_Z_DOWN_MM
             pickup_z_up   = ASSEMBLY_Z_UP_MM   if is_product else UNLOAD_Z_UP_MM

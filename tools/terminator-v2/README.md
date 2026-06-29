@@ -1,0 +1,37 @@
+# Terminator v2
+
+## 핵심 명령어
+
+```bash
+# 설치
+cd ~/ros2_ws
+./tools/terminator-v2/install_rslv2_alias.sh
+source ~/.bashrc
+
+# 실행
+rslv2
+
+# 로그 확인
+ls -td logs/* | head -1
+```
+
+## Pane 구성
+
+| 창 | 명령어 |
+|---|---|
+| 1 all_in_one | `ros2 launch all_in_one_package all_in_one_launch.py` |
+| 2 navigator | `ros2 run robocup_navigator robocup_navigator --ros-args -p side_mode:=A` |
+| 3 robot_launch | `ros2 launch amr_robot_launch amr_robot.launch.py vision_visualize:=true` |
+| 4 robocup_planner | `ros2 run robocup_planner planner_node --ros-args --params-file ~/ros2_ws/install/robocup_planner/share/robocup_planner/config/params.yaml` |
+| 5 order_server | `ros2 run sml_system_pkg order_server --ros-args -p auto_publish:=true -p start_side:=a -p tier:=beginner -p stage:=production` |
+| 6 empty | 빈 ROS2 준비 터미널 |
+| 7 empty | 빈 ROS2 준비 터미널 |
+| 8 empty | 빈 ROS2 준비 터미널 |
+
+## 권장 실행 순서
+
+```text
+1 -> 3 -> 4 -> 5 -> 2
+```
+
+로그는 `logs/YYYYMMDD_HHMM/1.log`부터 `8.log`까지 생성된다.

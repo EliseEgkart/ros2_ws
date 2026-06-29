@@ -762,15 +762,15 @@ class AmrRobotNode(Node):
         res = self.call_vision(str(object_id), retries=PRODUCT_VERIFY_VISION_RETRIES)
 
         if res and res.success:
-            self.get_logger().error(
-                f'[UNLOAD VERIFY] object_id={object_id} still detected; treat as fail'
+            self.get_logger().info(
+                f'[UNLOAD VERIFY] object_id={object_id} detected at workbench; treat as success'
             )
-            return False
+            return True
 
-        self.get_logger().info(
-            f'[UNLOAD VERIFY] object_id={object_id} not detected; treat as success'
+        self.get_logger().error(
+            f'[UNLOAD VERIFY] object_id={object_id} not detected at workbench; treat as fail'
         )
-        return True
+        return False
 
     def pick_from_floor_by_vision(self, object_id, label_prefix='pick'):
         vision_target = str(object_id)

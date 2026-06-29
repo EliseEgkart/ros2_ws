@@ -502,22 +502,44 @@ class RobocupNavigator(Node):
                 self._busy = False
 
     def _run_station_sequence(self, goal_handle, station_id: int):
-        profile = self._stations.get(station_id)
+        # Negative station_id = sub_goal phase only (approach leg).
+        # Positive/zero station_id = goal phase only (docking leg).
+        sub_goal_only = station_id < 0
+        real_id = abs(station_id)
+
+        profile = self._stations.get(real_id)
         if profile is None:
-            self.get_logger().error(f'Unknown station_id={station_id}')
+            self.get_logger().error(
+                f'Unknown station_id={station_id} (resolved={real_id})'
+            )
             return False, 'UNKNOWN_STATION'
+
+        if sub_goal_only:
+            sequence = [w for w in profile.sequence if w.endswith('_sub_goal')]
+            phase_label = 'sub_goal'
+        else:
+            sequence = [w for w in profile.sequence if not w.endswith('_sub_goal')]
+            phase_label = 'goal'
 
         self.get_logger().info(
             f'[STATION START] id={station_id}, name="{profile.name}", '
-            f'sequence={profile.sequence}'
+            f'phase={phase_label}, sequence={sequence}'
         )
+
+        if not sequence:
+            # No waypoints for this phase (e.g., station has no sub_goal).
+            self._publish_feedback(
+                goal_handle,
+                f'ARRIVED station={station_id} name={profile.name}',
+            )
+            return True, ''
 
         self._publish_feedback(
             goal_handle,
             f'MOVING station={station_id} name={profile.name}',
         )
 
-        for index, waypoint_name in enumerate(profile.sequence):
+        for index, waypoint_name in enumerate(sequence):
             if goal_handle.is_cancel_requested:
                 return False, 'CANCELED'
 
@@ -525,19 +547,21 @@ class RobocupNavigator(Node):
                 goal_handle,
                 waypoint_name,
                 index,
-                len(profile.sequence),
+                len(sequence),
             )
             if not ok:
                 return False, reason
 
-        if profile.post_process and self._approach_after_goal:
-            ok, reason = self._run_front_alignment(goal_handle, profile)
-            if not ok:
-                return False, reason
+        # Alignment and post-process are only needed at the final docking goal.
+        if not sub_goal_only:
+            if profile.post_process and self._approach_after_goal:
+                ok, reason = self._run_front_alignment(goal_handle, profile)
+                if not ok:
+                    return False, reason
 
-        self._pending_post_process_profile = (
-            profile if profile.post_process else None
-        )
+            self._pending_post_process_profile = (
+                profile if profile.post_process else None
+            )
 
         self._publish_feedback(
             goal_handle,

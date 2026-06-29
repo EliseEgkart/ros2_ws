@@ -20,4 +20,4 @@ echo "[OK] installed: $TARGET_CONFIG"
 echo "[OK] workspace: $WORKSPACE_DIR"
 echo
 echo "Run:"
-echo "  terminator -u -l robocup_8pane"
+echo "  terminator -u -l robocup"

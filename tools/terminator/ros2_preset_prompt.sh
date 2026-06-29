@@ -2,7 +2,12 @@
 
 WORKSPACE="${ROS2_WS:-$HOME/ros2_ws}"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
-CMD="$*"
+CMD="$1"
+LOG_NAME="${2:-ros2}"
+
+LOG_DIR="$WORKSPACE/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_${LOG_NAME}.log"
 
 cd "$WORKSPACE" || {
   echo "[ERROR] ROS2 workspace not found: $WORKSPACE"
@@ -31,6 +36,7 @@ echo "========================================"
 echo " ROS2 preset command"
 echo " Workspace : $WORKSPACE"
 echo " ROS distro: $ROS_DISTRO_NAME"
+echo " Log file  : $LOG_FILE"
 echo "========================================"
 echo
 
@@ -41,7 +47,7 @@ fi
 read -e -i "$CMD" -p "$ " USER_CMD
 
 if [ -n "$USER_CMD" ]; then
-  eval "$USER_CMD"
+  eval "$USER_CMD" 2>&1 | tee -a "$LOG_FILE"
 fi
 
 exec bash

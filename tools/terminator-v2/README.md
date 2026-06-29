@@ -20,7 +20,7 @@ ls -td logs/* | head -1
 | 창 | 명령어 |
 |---|---|
 | 1 all_in_one | `ros2 launch all_in_one_package all_in_one_launch.py` |
-| 2 navigator | `ros2 run robocup_navigator robocup_navigator --ros-args --params-file ~/ros2_ws/install/robocup_navigator/share/robocup_navigator/params/robocup_navigator_params.yaml` |
+| 2 navigator | `ros2 run robocup_navigator robocup_navigator` |
 | 3 robot_launch | `ros2 launch amr_robot_launch amr_robot.launch.py vision_visualize:=true` |
 | 4 robocup_planner | `ros2 run robocup_planner planner_node --ros-args --params-file ~/ros2_ws/install/robocup_planner/share/robocup_planner/config/params.yaml` |
 | 5 order_server | `ros2 run sml_system_pkg order_server --ros-args -p auto_publish:=true -p start_side:=a -p tier:=beginner -p stage:=production` |
@@ -38,9 +38,9 @@ ls -td logs/* | head -1
 
 | 용도 | 파일 |
 |---|---|
-| 전면 라이다 정렬, 후진 거리/속도, post-process timeout | `src/robocup_navigator/params/robocup_navigator_params.yaml` |
+| 전면 라이다 정렬, 후진 거리/속도, side, post-process timeout | `src/robocup_navigator/params/robocup_navigator_params.yaml` |
 | station별 이탈 회전 방향/각도 | `src/robocup_navigator/params/robocup_rotation_profiles.yaml` |
 
-튜닝값을 바꾼 뒤에는 `sb`로 다시 빌드하고 `rslv2`를 실행한다.
+Navigator가 위 yaml을 기본값으로 직접 읽는다. 튜닝값을 바꾼 뒤에는 navigator를 재시작한다.
 
 로그는 `logs/YYYYMMDD_HHMM/1.log`부터 `8.log`까지 생성된다.

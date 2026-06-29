@@ -1,96 +1,100 @@
 robocup_navigator:
-  ros__parameters:
-    # ------------------------------------------------------------------
-    # Base selection
-    # ------------------------------------------------------------------
-    # A: station ids 0-8. B: station ids 9-17.
-    side_mode: "A"
+ros__parameters:
+# 이 파일은 robocup_navigator가 시작될 때 직접 로드된다.
 
-    # ------------------------------------------------------------------
-    # Nav2 waypoint execution
-    # ------------------------------------------------------------------
-    # FollowWaypoints drives each sub_goal / goal waypoint.
-    follow_waypoints_action_name: "follow_waypoints"
-    follow_waypoints_server_timeout_sec: 10.0
-    nav_result_timeout_sec: 120.0
+# ------------------------------------------------------------------
+# 베이스 선택
+# ------------------------------------------------------------------
+# A: 스테이션 ID 0~8 사용. B: 스테이션 ID 9~17 사용.
+side_mode: "A"
 
-    # ------------------------------------------------------------------
-    # Topics
-    # ------------------------------------------------------------------
-    # cmd_vel is used only for front-distance alignment and stop commands.
-    # BackUp / Spin departure motions are sent through Nav2 actions.
-    cmd_vel_topic: "cmd_vel"
-    scan_topic: "/scan"
+# ------------------------------------------------------------------
+# Nav2 웨이포인트 실행
+# ------------------------------------------------------------------
+# FollowWaypoints 액션을 사용해 각 sub_goal / goal 웨이포인트로 이동한다.
+follow_waypoints_action_name: "follow_waypoints"
+follow_waypoints_server_timeout_sec: 10.0
+nav_result_timeout_sec: 120.0
 
-    # ------------------------------------------------------------------
-    # Front lidar sampling
-    # ------------------------------------------------------------------
-    # The front direction is sampled from both edges of LaserScan.ranges.
-    # Increase front_edge_sample_count to make the median more stable.
-    # Increase front_edge_skip_count if the exact edge beams are noisy.
-    front_edge_sample_count: 5
-    front_edge_skip_count: 0
-    scan_stale_timeout_sec: 0.5
-    front_min_valid_range: 0.005
-    front_max_valid_range: 5.0
+# ------------------------------------------------------------------
+# 토픽 설정
+# ------------------------------------------------------------------
+# cmd_vel은 전방 거리 정렬과 정지 명령에만 사용된다.
+# BackUp / Spin 기반 이탈 동작은 Nav2 액션을 통해 전송된다.
+cmd_vel_topic: "cmd_vel"
+scan_topic: "/scan"
 
-    # Enable while tuning target distance. Disable for quieter logs.
-    scan_debug: true
-    scan_debug_period_sec: 1.0
+# ------------------------------------------------------------------
+# 전방 라이다 샘플링
+# ------------------------------------------------------------------
+# LaserScan.ranges 배열의 양쪽 끝부분을 전방 방향으로 간주해 샘플링한다.
+# front_edge_sample_count를 늘리면 중앙값 계산이 더 안정적이 된다.
+# front_edge_skip_count를 늘리면 가장자리 빔이 노이즈가 심할 때 해당 빔을 건너뛸 수 있다.
+front_edge_sample_count: 5
+front_edge_skip_count: 0
+scan_stale_timeout_sec: 0.5
+front_min_valid_range: 0.005
+front_max_valid_range: 5.0
 
-    # ------------------------------------------------------------------
-    # Final front-distance alignment after docking goal
-    # ------------------------------------------------------------------
-    # If front_distance > target, the robot moves forward.
-    # If front_distance < target, the robot moves backward.
-    approach_after_goal: true
+# 목표 거리 튜닝 중에는 true로 설정한다.
+# 로그 출력을 줄이고 싶으면 false로 설정한다.
+scan_debug: true
+scan_debug_period_sec: 1.0
 
-    # Main tuning value: desired distance from the front structure.
-    target_front_distance: 0.47
+# ------------------------------------------------------------------
+# 도킹 목표점 도착 후 최종 전방 거리 정렬
+# ------------------------------------------------------------------
+# front_distance가 target보다 크면 로봇이 전진한다.
+# front_distance가 target보다 작으면 로봇이 후진한다.
+approach_after_goal: true
 
-    # Stop when abs(front_distance - target_front_distance) is within this.
-    target_distance_tolerance: 0.01
+# 핵심 튜닝 값: 전방 구조물과 유지할 목표 거리.
+target_front_distance: 0.47
 
-    # Linear.x speed limits used during alignment.
-    approach_speed: 0.08
-    approach_min_speed: 0.05
+# abs(front_distance - target_front_distance)가 이 값 이내로 들어오면 정렬을 종료한다.
+target_distance_tolerance: 0.01
 
-    # Inside this error distance, speed is scaled down toward min speed.
-    approach_slowdown_distance: 0.15
-    approach_timeout_sec: 12.0
+# 거리 정렬 중 linear.x에 적용할 속도 제한값.
+approach_speed: 0.08
+approach_min_speed: 0.05
 
-    # false: timeout is treated as non-fatal and navigation continues.
-    # true: timeout aborts the station navigation.
-    fail_on_alignment_timeout: false
+# 오차가 이 거리 안으로 들어오면 속도를 approach_min_speed 쪽으로 점진적으로 낮춘다.
+approach_slowdown_distance: 0.15
+approach_timeout_sec: 12.0
 
-    # ------------------------------------------------------------------
-    # Departure backup after station work
-    # ------------------------------------------------------------------
-    # Triggered by /robocup_navigator/post_process after arm work is done.
-    backup_after_goal: true
+# false: 정렬 타임아웃을 치명적 오류로 보지 않고 다음 동작을 계속 수행한다.
+# true: 정렬 타임아웃이 발생하면 해당 스테이션 내비게이션을 중단한다.
+fail_on_alignment_timeout: false
 
-    # Main tuning values for leaving the station.
-    backup_distance: 0.20
-    backup_speed: 0.14
+# ------------------------------------------------------------------
+# 스테이션 작업 후 후진 이탈
+# ------------------------------------------------------------------
+# 로봇팔 작업이 끝난 뒤 /robocup_navigator/post_process가 호출되면 실행된다.
+backup_after_goal: true
 
-    backup_timeout_sec: 5.0
-    backup_action_name: "backup"
+# 스테이션에서 빠져나올 때 사용할 핵심 튜닝 값.
+backup_distance: 0.20
+backup_speed: 0.14
 
-    # ------------------------------------------------------------------
-    # Departure rotation after backup
-    # ------------------------------------------------------------------
-    # Rotation direction and angle are NOT set here.
-    # They are loaded per goal waypoint from robocup_rotation_profiles.yaml.
-    rotate_after_backup: true
-    spin_action_name: "spin"
+backup_timeout_sec: 5.0
+backup_action_name: "backup"
 
-    # Navigator-side validity guard only. Nav2 Spin speed is limited by:
-    # src/amr/params/nav2_params*.yaml
-    #   recoveries_server.max_rotational_vel
-    #   recoveries_server.min_rotational_vel
-    #   recoveries_server.rotational_acc_lim
-    rotate_angular_speed: 1.4
-    rotate_timeout_sec: 8.0
+# ------------------------------------------------------------------
+# 후진 이후 회전 이탈
+# ------------------------------------------------------------------
+# 회전 방향과 회전 각도는 이 파일에서 설정하지 않는다.
+# 목표 웨이포인트별 회전 설정은 robocup_rotation_profiles.yaml에서 불러온다.
+rotate_after_backup: true
+spin_action_name: "spin"
 
-    # Loop sleep period for waiting/polling during navigator actions.
-    motion_period_sec: 0.05
+# navigator 내부에서 사용하는 유효성 검사용 값이다.
+# 실제 Nav2 Spin 회전 속도 제한은 아래 파일에서 설정된다.
+# src/amr/params/nav2_params*.yaml
+#   recoveries_server.max_rotational_vel
+#   recoveries_server.min_rotational_vel
+#   recoveries_server.rotational_acc_lim
+rotate_angular_speed: 1.4
+rotate_timeout_sec: 8.0
+
+# navigator 액션 대기/폴링 루프에서 사용하는 sleep 주기.
+motion_period_sec: 0.05

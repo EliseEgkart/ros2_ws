@@ -68,6 +68,14 @@ class RobocupNavigator(Node):
             default_yaml_path = share_params_dir / 'robocup_waypoint.yaml'
         default_yaml = str(default_yaml_path)
 
+        default_params_path = source_params_dir / 'robocup_navigator_params.yaml'
+        if not default_params_path.exists():
+            default_params_path = share_params_dir / 'robocup_navigator_params.yaml'
+        default_params = self._load_default_params_file(default_params_path)
+
+        def default_param(name: str, fallback):
+            return default_params.get(name, fallback)
+
         default_rotation_profiles_path = (
             source_params_dir / 'robocup_rotation_profiles.yaml'
         )
@@ -78,14 +86,20 @@ class RobocupNavigator(Node):
         default_rotation_profiles_yaml = str(default_rotation_profiles_path)
 
         self.declare_parameter('stations_file', default_yaml)
-        self.declare_parameter('frame_id', 'map')
-        self.declare_parameter('navigate_action_name', 'navigate_to_station')
+        self.declare_parameter('frame_id', default_param('frame_id', 'map'))
+        self.declare_parameter(
+            'navigate_action_name',
+            default_param('navigate_action_name', 'navigate_to_station'),
+        )
         self.declare_parameter(
             'post_process_service_name',
-            '/robocup_navigator/post_process',
+            default_param(
+                'post_process_service_name',
+                '/robocup_navigator/post_process',
+            ),
         )
 
-        self.declare_parameter('side_mode', 'A')
+        self.declare_parameter('side_mode', default_param('side_mode', 'A'))
         self.declare_parameter(
             'rotation_profiles_file',
             default_rotation_profiles_yaml,
@@ -93,41 +107,122 @@ class RobocupNavigator(Node):
 
         self.declare_parameter(
             'follow_waypoints_action_name',
-            'follow_waypoints',
+            default_param('follow_waypoints_action_name', 'follow_waypoints'),
         )
-        self.declare_parameter('follow_waypoints_server_timeout_sec', 10.0)
-        self.declare_parameter('nav_result_timeout_sec', 120.0)
+        self.declare_parameter(
+            'follow_waypoints_server_timeout_sec',
+            default_param('follow_waypoints_server_timeout_sec', 10.0),
+        )
+        self.declare_parameter(
+            'nav_result_timeout_sec',
+            default_param('nav_result_timeout_sec', 120.0),
+        )
 
-        self.declare_parameter('cmd_vel_topic', 'cmd_vel')
-        self.declare_parameter('scan_topic', '/scan')
-        self.declare_parameter('front_edge_sample_count', 5)
-        self.declare_parameter('front_edge_skip_count', 0)
-        self.declare_parameter('scan_stale_timeout_sec', 0.5)
-        self.declare_parameter('front_min_valid_range', 0.005)
-        self.declare_parameter('front_max_valid_range', 5.0)
-        self.declare_parameter('scan_debug', True)
-        self.declare_parameter('scan_debug_period_sec', 1.0)
+        self.declare_parameter(
+            'cmd_vel_topic',
+            default_param('cmd_vel_topic', 'cmd_vel'),
+        )
+        self.declare_parameter('scan_topic', default_param('scan_topic', '/scan'))
+        self.declare_parameter(
+            'front_edge_sample_count',
+            default_param('front_edge_sample_count', 5),
+        )
+        self.declare_parameter(
+            'front_edge_skip_count',
+            default_param('front_edge_skip_count', 0),
+        )
+        self.declare_parameter(
+            'scan_stale_timeout_sec',
+            default_param('scan_stale_timeout_sec', 0.5),
+        )
+        self.declare_parameter(
+            'front_min_valid_range',
+            default_param('front_min_valid_range', 0.005),
+        )
+        self.declare_parameter(
+            'front_max_valid_range',
+            default_param('front_max_valid_range', 5.0),
+        )
+        self.declare_parameter('scan_debug', default_param('scan_debug', True))
+        self.declare_parameter(
+            'scan_debug_period_sec',
+            default_param('scan_debug_period_sec', 1.0),
+        )
 
-        self.declare_parameter('approach_after_goal', True)
-        self.declare_parameter('target_front_distance', 0.47)
-        self.declare_parameter('target_distance_tolerance', 0.01)
-        self.declare_parameter('approach_speed', 0.08)
-        self.declare_parameter('approach_min_speed', 0.05)
-        self.declare_parameter('approach_slowdown_distance', 0.15)
-        self.declare_parameter('approach_timeout_sec', 12.0)
-        self.declare_parameter('fail_on_alignment_timeout', False)
+        self.declare_parameter(
+            'approach_after_goal',
+            default_param('approach_after_goal', True),
+        )
+        self.declare_parameter(
+            'target_front_distance',
+            default_param('target_front_distance', 0.47),
+        )
+        self.declare_parameter(
+            'target_distance_tolerance',
+            default_param('target_distance_tolerance', 0.01),
+        )
+        self.declare_parameter(
+            'approach_speed',
+            default_param('approach_speed', 0.08),
+        )
+        self.declare_parameter(
+            'approach_min_speed',
+            default_param('approach_min_speed', 0.05),
+        )
+        self.declare_parameter(
+            'approach_slowdown_distance',
+            default_param('approach_slowdown_distance', 0.15),
+        )
+        self.declare_parameter(
+            'approach_timeout_sec',
+            default_param('approach_timeout_sec', 12.0),
+        )
+        self.declare_parameter(
+            'fail_on_alignment_timeout',
+            default_param('fail_on_alignment_timeout', False),
+        )
 
-        self.declare_parameter('backup_after_goal', True)
-        self.declare_parameter('backup_distance', 0.20)
-        self.declare_parameter('backup_speed', 0.14)
-        self.declare_parameter('backup_timeout_sec', 5.0)
-        self.declare_parameter('backup_action_name', 'backup')
+        self.declare_parameter(
+            'backup_after_goal',
+            default_param('backup_after_goal', True),
+        )
+        self.declare_parameter(
+            'backup_distance',
+            default_param('backup_distance', 0.20),
+        )
+        self.declare_parameter(
+            'backup_speed',
+            default_param('backup_speed', 0.14),
+        )
+        self.declare_parameter(
+            'backup_timeout_sec',
+            default_param('backup_timeout_sec', 5.0),
+        )
+        self.declare_parameter(
+            'backup_action_name',
+            default_param('backup_action_name', 'backup'),
+        )
 
-        self.declare_parameter('rotate_after_backup', True)
-        self.declare_parameter('spin_action_name', 'spin')
-        self.declare_parameter('rotate_angular_speed', 1.4)
-        self.declare_parameter('rotate_timeout_sec', 8.0)
-        self.declare_parameter('motion_period_sec', 0.05)
+        self.declare_parameter(
+            'rotate_after_backup',
+            default_param('rotate_after_backup', True),
+        )
+        self.declare_parameter(
+            'spin_action_name',
+            default_param('spin_action_name', 'spin'),
+        )
+        self.declare_parameter(
+            'rotate_angular_speed',
+            default_param('rotate_angular_speed', 1.4),
+        )
+        self.declare_parameter(
+            'rotate_timeout_sec',
+            default_param('rotate_timeout_sec', 8.0),
+        )
+        self.declare_parameter(
+            'motion_period_sec',
+            default_param('motion_period_sec', 0.05),
+        )
 
         self._load_parameters()
 
@@ -204,6 +299,37 @@ class RobocupNavigator(Node):
             f'backup_action="{backup_action}", spin_action="{spin_action}", '
             f'stations={sorted(self._stations.keys())}, scan="{scan_topic}"'
         )
+
+    def _load_default_params_file(self, path: Path):
+        if not path.exists():
+            self.get_logger().warn(
+                f'Navigator params file not found: {path}. '
+                'Using built-in fallback defaults.'
+            )
+            return {}
+
+        try:
+            with path.open('r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Failed to read navigator params file: {exc}. '
+                'Using built-in fallback defaults.'
+            )
+            return {}
+
+        params = {}
+        if isinstance(data, dict):
+            node_section = data.get('robocup_navigator', {})
+            if isinstance(node_section, dict):
+                raw_params = node_section.get('ros__parameters', {})
+                if isinstance(raw_params, dict):
+                    params = raw_params
+
+        self.get_logger().info(
+            f'Loaded navigator default params: {len(params)} from {path}'
+        )
+        return params
 
     def _load_parameters(self):
         self._follow_server_timeout_sec = float(

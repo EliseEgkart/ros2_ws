@@ -22,6 +22,7 @@ cd ~/ros2_ws
 ```
 
 이 방식은 `terminator -g tools/terminator/terminator_robocup_8pane.config -l robocup_8pane`로 실행된다.
+실행할 때마다 `logs/YYYYMMDD_HHMM/` 폴더가 생성되고, 1번부터 8번 pane의 출력은 각각 `1.log`부터 `8.log`에 저장된다.
 
 ## 기본 Terminator 레이아웃으로 설치
 
@@ -123,6 +124,25 @@ grep ros2_preset_prompt ~/.config/terminator/config
 | 6 | `ros2 run sml_system_pkg sml_manager_node` |
 | 7 | `ros2 run sml_system_pkg order_server` |
 | 8 | `ros2 topic list` |
+
+## 로그
+
+`./tools/terminator/open_robocup_terminator.sh`로 실행하면 시작 시각 기준으로 로그 폴더가 한 번 생성되고, `1.log`부터 `8.log`까지 먼저 만들어진다. 같은 분 안에 다시 실행해서 같은 이름의 폴더가 이미 있으면 `_2`, `_3`처럼 번호가 붙는다.
+
+```text
+logs/
+  20260629_1755/
+    1.log
+    2.log
+    3.log
+    4.log
+    5.log
+    6.log
+    7.log
+    8.log
+```
+
+각 로그 파일에는 해당 Terminator pane에서 실제 실행한 명령의 stdout/stderr가 함께 저장된다. 화면 출력은 기존처럼 표시된다.
 
 주의: 기존 문서의 `sml_planning_node`는 현재 `src/sml_system_pkg/setup.py`에 등록되어 있지 않다. 등록된 실행 파일은 `sml_planning_node_plan_a`, `sml_planning_node_plan_b`이며, 설정 기본값은 `plan_a`다.
 

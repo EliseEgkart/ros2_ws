@@ -116,9 +116,9 @@ FINISHED_PRODUCTS = PRODUCT_FLOOR_1 | PRODUCT_FLOOR_2_5 | PRODUCT_FLOOR_2
 PRODUCT_DELIVERY_IDX = 6
 PRODUCT_SLOT = 1  # 완제품 보관 슬롯 → 언로드 시 항상 PRODUCT_DELIVERY_IDX로 고정
 
-# 경기 당일 워크벤치 스테이션 아이디를 여기에 입력
-# 워크벤치 스테이션에서만 언로드 후 검증 로직 실행
-WORKBENCH_STATION_IDS = {1}
+# Official workbench station ids. Used to distinguish product unloads to the
+# workbench from customer deliveries.
+WORKBENCH_STATION_IDS = {3, 6, 7, 12, 15, 16}
 
 # --- LOAD 비전/오프셋 상수 ---
 CAM_X_OFF = -51.0

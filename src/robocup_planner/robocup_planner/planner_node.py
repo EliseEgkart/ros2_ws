@@ -712,6 +712,18 @@ class PlannerNode(Node):
             location=0,
         )
 
+    def arm_unload_product_to_workbench(self, product_id: int, station_id: int) -> bool:
+        """Unload a recycled product from cargo 1 to the current workbench."""
+        self.get_logger().info(
+            f"[ARM] unload recycled product_id={product_id} to workbench {station_id}"
+        )
+        return self._arm_call(
+            ARM_PLACE,
+            object_ids=[product_id],
+            location=station_id,
+            station_id=station_id,
+        )
+
     def arm_deliver(self, product_id: int, from_cargo_id: int = 0) -> bool:
         """Deliver a finished product to the customer counter.
         The arm locates the product via cargo_manager FIND_OBJECT."""

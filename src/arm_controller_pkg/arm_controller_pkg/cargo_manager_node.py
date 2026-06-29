@@ -32,9 +32,8 @@ PRODUCT_SLOT = 1
 MATERIAL_SLOTS = [2, 3, 4, 5, 6]
 ASSEMBLY_SLOTS = [7, 8]  # 조립 슬롯 (FIND_EMPTY 검색 대상 아님)
 
-# 경기 당일 워크벤치 스테이션 아이디를 여기에 입력
-# 워크벤치 스테이션은 delivery 기록을 하지 않음
-WORKBENCH_STATION_IDS = {1}
+# Official workbench station ids. Workbench unloads are not customer deliveries.
+WORKBENCH_STATION_IDS = {3, 6, 7, 12, 15, 16}
 
 
 class CargoManagerNode(Node):
@@ -76,7 +75,19 @@ class CargoManagerNode(Node):
 
         if action == 'FIND_EMPTY':
             if request.object_id > 8:
-                search_slots = [PRODUCT_SLOT]
+                if not self.slot_state[PRODUCT_SLOT]:
+                    response.success = True
+                    response.slot = PRODUCT_SLOT
+                    response.layer_index = 0
+                    response.message = f'empty product slot found: slot={PRODUCT_SLOT}'
+                    self.get_logger().info(f'[CARGO] {response.message}')
+                    return response
+
+                response.success = False
+                response.slot = -1
+                response.message = 'product slot occupied'
+                self.get_logger().warn(f'[CARGO] {response.message}')
+                return response
             else:
                 search_slots = MATERIAL_SLOTS
 
@@ -120,6 +131,9 @@ class CargoManagerNode(Node):
             if slot not in self.slot_state:
                 response.success = False
                 response.message = f'invalid slot={slot}'
+            elif slot == PRODUCT_SLOT and request.object_id > 8 and self.slot_state[slot]:
+                response.success = False
+                response.message = 'product slot occupied'
             else:
                 obj = request.object_id
                 self.slot_state[slot].append(obj)

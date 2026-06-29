@@ -139,6 +139,12 @@ class Executor:
             self._node.navigate_subgoal(workbench_id)
             self._wait_for_intransit_assembly()
             self._node.navigate_goal(workbench_id)
+            self._log(f"  → unload product {pid} to workbench")
+            if not self._node.arm_unload_product_to_workbench(
+                product_id=pid,
+                station_id=workbench_id,
+            ):
+                raise RuntimeError(f"failed to unload recycled product {pid} to workbench")
             self._log(f"  → workbench disassembly of product {pid}")
             self._node.wb_task('RECYCLE', pid)
             # After disassembly the arm places reclaimed materials onto cargo 2-6.

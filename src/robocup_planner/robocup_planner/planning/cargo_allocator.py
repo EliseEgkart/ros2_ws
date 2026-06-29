@@ -7,11 +7,14 @@ Priority rule when more than 2 products qualify:
   2. Smallest product_id as deterministic tie-break.
 
 Slot lifecycle:
-  allocate()         → assign products to cargo 7/8 at plan time.
-  find_slot_for_block() → query which cargo slot is waiting for a given block.
-  confirm_placed()   → record that a block was successfully placed; returns
-                        True when the assembly on that cargo is complete.
-  free_slot()        → called after product is delivered; releases the slot.
+  allocate()        → assign products to cargo 7/8 at plan time.
+  mark_assembled()  → called when ASSEMBLE starts for a product and the
+                       target cargo slot should be treated as deliverable.
+  free_slot()       → called after product is delivered; releases the slot.
+
+find_slot_for_block() and confirm_placed() are retained for the older direct
+raw-material-to-assembly-slot model, but the current AMR arm loads raw
+materials into cargo 2-6 and assembles them onto cargo 7/8 later.
 """
 
 from typing import Dict, List, Optional
@@ -46,6 +49,10 @@ class IntransitSlot:
         """Record block as placed. Returns True if assembly is now complete."""
         self.placed.append(material_id)
         return self.is_complete
+
+    def mark_complete(self) -> None:
+        """Mark the slot as containing the completed assembled product."""
+        self.placed = list(self.build_order)
 
 
 class CargoAllocator:
@@ -113,6 +120,27 @@ class CargoAllocator:
         """Return the product_id allocated to cargo_id, or None."""
         slot = self._slots.get(cargo_id)
         return slot.product_id if slot is not None else None
+
+    def get_product_slot(self, product_id: int) -> Optional[int]:
+        """Return the cargo_id allocated to product_id, or None."""
+        for cargo_id, slot in self._slots.items():
+            if slot is not None and slot.product_id == product_id:
+                return cargo_id
+        return None
+
+    def mark_assembled(self, product_id: int) -> Optional[int]:
+        """
+        Mark product_id as assembled on its allocated cargo slot.
+        Returns the cargo_id, or None if product_id is not allocated.
+        """
+        cargo_id = self.get_product_slot(product_id)
+        if cargo_id is None:
+            return None
+        slot = self._slots.get(cargo_id)
+        if slot is None:
+            return None
+        slot.mark_complete()
+        return cargo_id
 
     def has_in_progress(self) -> bool:
         """True if any cargo 7/8 slot has blocks placed but is not yet complete."""

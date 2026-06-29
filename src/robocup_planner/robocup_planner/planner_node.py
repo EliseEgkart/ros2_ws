@@ -6,11 +6,11 @@ reactive executor in a background thread while the ROS2 node spins
 normally in the main thread.
 
 Interfaces:
-  Sub  /eai/task              sml_msgs/Task        — task definition
-  Sub  <wb_ready_topic>       std_msgs/Int32        — workbench product_id ready
-  Act  <nav_action>           sml_msgs/NavTask      — navigate to station
-  Act  <wb_action>            sml_msgs/WbTask       — workbench work
-  Srv  <arm_service>          arm_interfaces/Cargo  — arm pick/place
+  Sub  /sml/task              sml_msgs/Task         — task definition
+  Sub  <wb_ready_topic>       std_msgs/Int32         — workbench product_id ready
+  Act  navigate_to_station    sml_msgs/NavTask       — navigate to station
+  Act  wb_task                sml_msgs/WbTask        — workbench work
+  Srv  /amr_robot_command     sml_msgs/ArmCommand    — arm pick/place
 
 Blocking helper methods (navigate, arm_*, wb_task) are called from the
 executor thread and use threading.Event to wait for ROS2 async results.
@@ -33,8 +33,8 @@ TASK_QOS = QoSProfile(
 
 from sml_msgs.action import NavTask, WbTask
 from sml_msgs.msg import Task
+from sml_msgs.srv import ArmCommand
 from std_msgs.msg import Int32
-from arm_interfaces.srv import Cargo
 
 from robocup_planner.planning.aidlist_builder import compute_net_aidlist
 from robocup_planner.planning.cargo_allocator import CargoAllocator
@@ -70,11 +70,21 @@ class PlannerNode(Node):
         super().__init__('robocup_planner')
 
         # --- Parameters ---
-        self.declare_parameter('waypoint_yaml', '')
-        self.declare_parameter('task_topic', '/eai/task')
-        self.declare_parameter('nav_action', '/robocup/nav_task')
-        self.declare_parameter('wb_action', '/robocup/wb_task')
-        self.declare_parameter('arm_service', '/arm/cargo')
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            import os as _os
+            _default_wp = _os.path.join(
+                get_package_share_directory('robocup_planner'),
+                'config',
+                'robocup_waypoint.yaml',
+            )
+        except Exception:
+            _default_wp = ''
+        self.declare_parameter('waypoint_yaml', _default_wp)
+        self.declare_parameter('task_topic', '/sml/task')
+        self.declare_parameter('nav_action', 'navigate_to_station')
+        self.declare_parameter('wb_action', 'wb_task')
+        self.declare_parameter('arm_service', '/amr_robot_command')
         self.declare_parameter('wb_ready_topic', '/workbench/product_ready')
         self.declare_parameter('driving_velocity', 0.5)
         self.declare_parameter('parking_duration', 1.5)
@@ -102,7 +112,7 @@ class PlannerNode(Node):
         )
         self._nav_client = ActionClient(self, NavTask, nav_action)
         self._wb_client = ActionClient(self, WbTask, wb_action)
-        self._arm_client = self.create_client(Cargo, arm_service)
+        self._arm_client = self.create_client(ArmCommand, arm_service)
 
         # Active executor (one at a time)
         self._executor_thread: Optional[threading.Thread] = None
@@ -412,14 +422,21 @@ class PlannerNode(Node):
         done.wait()
         return success_holder[0]
 
-    def _arm_call(self, action: str, object_id: int, slot: int) -> bool:
-        """Send one Cargo service call to the arm. Blocks until response."""
+    def _arm_call(
+        self,
+        action: str,
+        object_ids: list,
+        location: int = 0,
+        slide_ids: list = None,
+    ) -> bool:
+        """Send one ArmCommand service call to the arm. Blocks until response."""
         self._arm_client.wait_for_service()
 
-        req = Cargo.Request()
+        req = ArmCommand.Request()
         req.action = action
-        req.object_id = object_id
-        req.slot = slot
+        req.object_ids = [int(x) for x in object_ids]
+        req.location = int(location)
+        req.slide_ids = [int(x) for x in (slide_ids or [])]
 
         future = self._arm_client.call_async(req)
         done = threading.Event()
@@ -435,20 +452,40 @@ class PlannerNode(Node):
         self, station_id: int, material_id: int, manipulator_slot: int
     ) -> bool:
         """Pick one material block from a storage station and place it on cargo."""
-        return self._arm_call(ARM_PICK, material_id, manipulator_slot)
+        return self._arm_call(
+            ARM_PICK,
+            object_ids=[material_id],
+            location=station_id,
+            slide_ids=[manipulator_slot],
+        )
 
     def arm_pick_product(self, station_id: int, product_id: int) -> bool:
         """Pick an assembled product from a customer counter (for recycling)."""
-        return self._arm_call(ARM_PICK, product_id, 0)
+        return self._arm_call(
+            ARM_PICK,
+            object_ids=[product_id],
+            location=station_id,
+            slide_ids=[0],
+        )
 
     def arm_unload_material(self, cargo_id: int, placement_idx: int) -> bool:
         """Unload a material block from cargo (drop at workbench)."""
         slot_value = cargo_id * 10 + placement_idx
-        return self._arm_call(ARM_PLACE, 0, slot_value)
+        return self._arm_call(
+            ARM_PLACE,
+            object_ids=[0],
+            location=0,
+            slide_ids=[slot_value],
+        )
 
     def arm_deliver(self, from_cargo_id: int) -> bool:
         """Deliver a finished product from cargo to the customer counter."""
-        return self._arm_call(ARM_DELIVER, 0, from_cargo_id)
+        return self._arm_call(
+            ARM_DELIVER,
+            object_ids=[0],
+            location=0,
+            slide_ids=[from_cargo_id],
+        )
 
 
 # ------------------------------------------------------------------

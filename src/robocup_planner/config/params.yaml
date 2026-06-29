@@ -1,9 +1,8 @@
 robocup_planner:
   ros__parameters:
 
-    # Path to the AMR waypoint YAML provided by the AMR team.
-    # Update this on competition day with the actual path.
-    waypoint_yaml: "/home/robot/ros2_ws/src/robocup_navigator/params/robocup_waypoint.yaml"
+    # Path to the AMR waypoint YAML. Leave empty to auto-resolve from package share directory.
+    waypoint_yaml: ""
 
     # --- AMR Motion Parameters ---
     # Cruising speed and acceleration between waypoints
@@ -36,10 +35,10 @@ robocup_planner:
     error_margin: 2.0            # seconds — safety buffer added to each estimate
 
     # --- ROS Topic / Action / Service Names ---
-    task_topic: "/eai/task"
-    nav_action: "/robocup/nav_task"
-    wb_action:  "/robocup/wb_task"
-    arm_service: "/arm/cargo"
+    task_topic: "/sml/task"
+    nav_action: "navigate_to_station"
+    wb_action:  "wb_task"
+    arm_service: "/amr_robot_command"
 
     # Topic published by the workbench when it finishes a product autonomously
     # (used for the workbench interrupt signal)

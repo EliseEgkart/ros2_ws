@@ -1,5 +1,6 @@
 # vision_node.py
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from arm_interfaces.srv import GetTargetPose
 from vision_pkg.vision_6d_manager import (
@@ -20,14 +21,24 @@ class VisionNode(Node):
         self.declare_parameter('comp_model_path', COMP_MODEL_PATH)
         self.declare_parameter('visualize', False)
         self.declare_parameter('visualize_window', '6D Pose (Ensemble Mode)')
-        self.declare_parameter('visualize_scale', 1.0)
-        self.declare_parameter('live_view', False)
+        self.declare_parameter('visualize_scale', 2.0)
+        self.declare_parameter('live_view', True)
         self.declare_parameter('live_target_id', 0)
         self.declare_parameter('live_view_period_sec', 0.15)
+        self.declare_parameter('use_shape_ratio_filter', True)
+        self.declare_parameter('shape_ratio_threshold', 1.5)
+        self.declare_parameter('edge_contact_max_px', 10)
+        self.declare_parameter('edge_contact_margin_px', 2)
+        self.declare_parameter('use_depth_median_filter', True)
+        self.declare_parameter('depth_median_margin_m', 0.01)
+        self.declare_parameter('depth_median_min_samples', 2)
 
         self.vision = None
         self.init_error = None
         self.live_view_timer = None
+        # q/ESC 또는 Ctrl+C 종료 요청은 callback 안에서 rclpy.shutdown()을 바로 호출하지 않고,
+        # main()의 spin_once 루프가 이 플래그를 보고 빠져나가도록 한다.
+        self.shutdown_requested = False
         try:
             self.vision = Vision6DPoseManager(
                 logger=self.get_logger(),
@@ -40,6 +51,13 @@ class VisionNode(Node):
                 ),
                 visualize_window=self.get_parameter('visualize_window').value,
                 visualize_scale=float(self.get_parameter('visualize_scale').value),
+                use_shape_ratio_filter=bool(self.get_parameter('use_shape_ratio_filter').value),
+                shape_ratio_threshold=float(self.get_parameter('shape_ratio_threshold').value),
+                edge_contact_max_px=int(self.get_parameter('edge_contact_max_px').value),
+                edge_contact_margin_px=int(self.get_parameter('edge_contact_margin_px').value),
+                use_depth_median_filter=bool(self.get_parameter('use_depth_median_filter').value),
+                depth_median_margin_m=float(self.get_parameter('depth_median_margin_m').value),
+                depth_median_min_samples=int(self.get_parameter('depth_median_min_samples').value),
             )
             self.get_logger().info('[VISION] vision_node started (6D ensemble based)')
             if bool(self.get_parameter('live_view').value):
@@ -62,11 +80,40 @@ class VisionNode(Node):
             return
 
         try:
+            if getattr(self.vision, 'stop_requested', False):
+                self.request_shutdown('[VISION] stop requested before live frame')
+                return
+
             self.vision.show_live_frame(
                 target_id=int(self.get_parameter('live_target_id').value)
             )
+
+            if getattr(self.vision, 'stop_requested', False):
+                self.request_shutdown('[VISION] q/ESC pressed in OpenCV window')
         except Exception as e:
             self.get_logger().warn(f'[VISION] live view frame skipped: {e}')
+
+    def request_shutdown(self, reason):
+        """Request node shutdown without calling rclpy.shutdown() inside a callback.
+
+        Calling rclpy.shutdown() directly inside a ROS2 timer/service callback can
+        leave OpenCV HighGUI, RealSense, and the executor in an awkward state.
+        Instead, set a flag and let main() exit its spin_once loop. The actual
+        camera/window cleanup happens in destroy_node().
+        """
+        if not self.shutdown_requested:
+            self.get_logger().info(reason)
+        self.shutdown_requested = True
+
+        if self.live_view_timer is not None:
+            try:
+                self.live_view_timer.cancel()
+            except Exception:
+                pass
+            self.live_view_timer = None
+
+        if self.vision is not None:
+            self.vision.stop_requested = True
 
     def get_pose_cb(self, request, response):
         target_str = request.target_color.strip()
@@ -89,7 +136,15 @@ class VisionNode(Node):
 
             target_id = int(target_str)
 
+            if getattr(self.vision, 'stop_requested', False):
+                response.success = False
+                self.get_logger().warn('[VISION] stop requested; refusing new service call')
+                return response
+
             result = self.vision.run_pipeline_by_id(target_id=target_id)
+
+            if getattr(self.vision, 'stop_requested', False):
+                self.request_shutdown('[VISION] q/ESC pressed during service visualization')
 
             if result.success:
                 response.success = True
@@ -127,8 +182,17 @@ class VisionNode(Node):
         return response
 
     def destroy_node(self):
+        if self.live_view_timer is not None:
+            try:
+                self.live_view_timer.cancel()
+            except Exception:
+                pass
+            self.live_view_timer = None
+
         if self.vision is not None:
             self.vision.shutdown()
+            self.vision = None
+
         super().destroy_node()
 
 
@@ -136,11 +200,17 @@ def main(args=None):
     rclpy.init(args=args)
     node = VisionNode()
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+        # rclpy.spin(node)를 쓰면 callback 안의 종료 플래그를 보고 빠져나오기 어렵다.
+        # spin_once 루프를 사용해서 OpenCV q/ESC 입력 후 main thread에서 정리한다.
+        while rclpy.ok() and not getattr(node, 'shutdown_requested', False):
+            rclpy.spin_once(node, timeout_sec=0.1)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        node.shutdown_requested = True
     finally:
-        node.destroy_node()
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
         if rclpy.ok():
             rclpy.shutdown()
 

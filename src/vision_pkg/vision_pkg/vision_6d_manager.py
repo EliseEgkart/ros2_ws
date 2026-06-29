@@ -78,6 +78,13 @@ class Vision6DPoseManager:
         visualize=False,
         visualize_window="6D Pose (Ensemble Mode)",
         visualize_scale=1.0,
+        use_shape_ratio_filter=True,
+        shape_ratio_threshold=1.5,
+        edge_contact_max_px=10,
+        edge_contact_margin_px=2,
+        use_depth_median_filter=True,
+        depth_median_margin_m=0.030,
+        depth_median_min_samples=2,
     ):
         self.logger = logger
         self.det_model_path = det_model_path
@@ -89,6 +96,15 @@ class Vision6DPoseManager:
         self.visualize = bool(visualize)
         self.visualize_window = str(visualize_window)
         self.visualize_scale = max(0.1, float(visualize_scale))
+        self.use_shape_ratio_filter = bool(use_shape_ratio_filter)
+        self.shape_ratio_threshold = float(shape_ratio_threshold)
+        self.edge_contact_max_px = int(edge_contact_max_px)
+        self.edge_contact_margin_px = int(edge_contact_margin_px)
+        self.use_depth_median_filter = bool(use_depth_median_filter)
+        self.depth_median_margin_m = float(depth_median_margin_m)
+        self.depth_median_min_samples = int(depth_median_min_samples)
+        self.stop_requested = False
+        self._pipeline_started = False
 
         self._check_model_file(self.det_model_path)
         self._check_model_file(self.seg_model_path)
@@ -103,6 +119,7 @@ class Vision6DPoseManager:
         config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
         config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
         profile = self.pipeline.start(config)
+        self._pipeline_started = True
         self.align = rs.align(rs.stream.color)
         self.intrinsics = (
             profile.get_stream(rs.stream.color)
@@ -116,19 +133,40 @@ class Vision6DPoseManager:
             f"det_task={self.model_det.task}, seg_task={self.model_seg.task}, "
             f"comp_task={self.model_comp.task}, "
             f"visualize={self.visualize}, "
-            f"visualize_scale={self.visualize_scale}"
+            f"visualize_scale={self.visualize_scale}, "
+            f"shape_filter={self.use_shape_ratio_filter}, "
+            f"shape_ratio_threshold={self.shape_ratio_threshold}, "
+            f"edge_contact_max_px={self.edge_contact_max_px}, "
+            f"edge_contact_margin_px={self.edge_contact_margin_px}, "
+            f"depth_median_filter={self.use_depth_median_filter}, "
+            f"depth_median_margin_m={self.depth_median_margin_m}, "
+            f"depth_median_min_samples={self.depth_median_min_samples}"
         )
 
     def shutdown(self):
-        try:
-            self.pipeline.stop()
-        except Exception as exc:
-            self._log_warn(f"RealSense pipeline stop failed: {exc}")
-        if self.visualize:
+        """Stop camera and OpenCV GUI safely.
+
+        This is intentionally tolerant because shutdown can be triggered by
+        Ctrl+C, q/ESC in an OpenCV window, or ROS2 node destruction.
+        """
+        self.stop_requested = True
+
+        if self._pipeline_started:
             try:
-                cv2.destroyWindow(self.visualize_window)
-            except Exception:
-                pass
+                self.pipeline.stop()
+            except Exception as exc:
+                self._log_warn(f"RealSense pipeline stop failed: {exc}")
+            finally:
+                self._pipeline_started = False
+
+        try:
+            cv2.destroyAllWindows()
+            # Let the HighGUI event queue flush. This reduces Qt/GTK window
+            # errors when the node is stopped from a terminal.
+            for _ in range(5):
+                cv2.waitKey(1)
+        except Exception:
+            pass
 
     def run_pipeline_by_id(self, target_id):
         try:
@@ -157,7 +195,7 @@ class Vision6DPoseManager:
             f"pipeline={pipeline_name}"
         )
 
-        while time.time() - start_time < self.sample_sec:
+        while (time.time() - start_time < self.sample_sec) and not self.stop_requested:
             try:
                 frames = self.pipeline.wait_for_frames(timeout_ms=500)
                 aligned = self.align.process(frames)
@@ -167,16 +205,23 @@ class Vision6DPoseManager:
                     continue
 
                 image = np.asanyarray(color_frame.get_data())
-                det_result = model_det(image, verbose=False)[0]
-                seg_result = model_seg(image, verbose=False)[0]
+                det_result, seg_result = self.run_yolo_pair(model_det, model_seg, image)
                 if det_result.boxes is None:
                     continue
 
                 all_z_values = []
                 frame_targets = []
                 detections_for_vis = []
+                pre_candidates = []
 
-                for box in det_result.boxes:
+                # ------------------------------------------------------------
+                # 1차 필터:
+                # - segmentation edge contact 길이 검사
+                # - 2x2 / 4x2 mask 형상비 검사
+                # - YOLO bbox 중심 depth 획득
+                # 여기서 통과한 객체들의 중심 depth median을 기준 depth로 사용한다.
+                # ------------------------------------------------------------
+                for det_idx, box in enumerate(det_result.boxes):
                     cls_name = det_result.names[int(box.cls[0])]
                     cls_key = self._normalize_class_name(cls_name)
 
@@ -185,69 +230,135 @@ class Vision6DPoseManager:
                     v = int((xyxy[1] + xyxy[3]) / 2)
 
                     is_target = self._target_matches(target_key, cls_key)
-
-                    # ------------------------------------------------------------
-                    # [NEW] 화면 테두리에 걸친 객체 제거
-                    # ------------------------------------------------------------
-                    if self.is_border_cut_object(
-                        xyxy=xyxy,
-                        image_shape=image.shape,
+                    mask_pts = self.get_matching_mask_points(
+                        det_result=det_result,
                         seg_result=seg_result,
+                        det_idx=det_idx,
                         target_u=u,
                         target_v=v,
-                        match_distance_px=self.match_distance_px,
-                        margin_px=12,
-                    ):
+                    )
+
+                    edge_contact_px = self.get_mask_border_contact_px(
+                        mask_pts=mask_pts,
+                        image_shape=image.shape,
+                        margin_px=self.edge_contact_margin_px,
+                    )
+                    if edge_contact_px > self.edge_contact_max_px:
                         detections_for_vis.append(
                             {
                                 "u": u,
                                 "v": v,
                                 "z": 0.0,
                                 "yaw": 0.0,
-                                "class_name": f"{cls_name}_edge_cut",
+                                "ratio": None,
+                                "class_name": f"{cls_name}_edge{edge_contact_px}px",
+                                "is_target": False,
+                            }
+                        )
+                        continue
+
+                    ratio = self.calculate_mask_aspect_ratio(mask_pts)
+                    if not self.brick_shape_ratio_pass(cls_key, ratio):
+                        ratio_text = "unknown" if ratio is None else f"{ratio:.2f}"
+                        detections_for_vis.append(
+                            {
+                                "u": u,
+                                "v": v,
+                                "z": 0.0,
+                                "yaw": 0.0,
+                                "ratio": ratio,
+                                "class_name": f"{cls_name}_shape_r{ratio_text}",
                                 "is_target": False,
                             }
                         )
                         continue
 
                     z = self.get_valid_depth(depth_frame, u, v)
-                    yaw = 0.0
-                    is_target = self._target_matches(target_key, cls_key)
                     if z <= 0.0:
                         detections_for_vis.append(
                             {
                                 "u": u,
                                 "v": v,
                                 "z": z,
-                                "yaw": yaw,
+                                "yaw": 0.0,
+                                "ratio": ratio,
                                 "class_name": str(cls_name),
                                 "is_target": is_target,
                             }
                         )
                         continue
 
+                    pre_candidates.append(
+                        {
+                            "u": u,
+                            "v": v,
+                            "z": float(z),
+                            "ratio": ratio,
+                            "mask_pts": mask_pts,
+                            "class_name": str(cls_name),
+                            "cls_key": cls_key,
+                            "is_target": is_target,
+                        }
+                    )
+
+                depth_ref_m = self.get_depth_median_reference(
+                    [item["z"] for item in pre_candidates]
+                )
+
+                # ------------------------------------------------------------
+                # 2차 필터:
+                # 같은 프레임에서 살아남은 YOLO 후보들의 중심 depth median과
+                # 크게 다른 객체는 바닥 아래/뒤쪽을 본 것으로 간주하고 제외한다.
+                # RANSAC 없이 CPU에서 가볍게 동작하는 상대 depth 필터이다.
+                # ------------------------------------------------------------
+                for item in pre_candidates:
+                    z = item["z"]
+                    ratio = item["ratio"]
+                    cls_name = item["class_name"]
+                    u = item["u"]
+                    v = item["v"]
+                    is_target = item["is_target"]
+
+                    if not self.depth_median_filter_pass(z, depth_ref_m):
+                        diff_mm = 0.0 if depth_ref_m is None else abs(z - depth_ref_m) * 1000.0
+                        detections_for_vis.append(
+                            {
+                                "u": u,
+                                "v": v,
+                                "z": z,
+                                "yaw": 0.0,
+                                "ratio": ratio,
+                                "class_name": f"{cls_name}_depth{diff_mm:.0f}mm",
+                                "is_target": False,
+                            }
+                        )
+                        continue
+
                     all_z_values.append(z)
+
                     if not is_target:
                         detections_for_vis.append(
                             {
                                 "u": u,
                                 "v": v,
                                 "z": z,
-                                "yaw": yaw,
-                                "class_name": str(cls_name),
+                                "yaw": 0.0,
+                                "ratio": ratio,
+                                "class_name": cls_name,
                                 "is_target": False,
                             }
                         )
                         continue
 
-                    yaw = self.find_yaw_from_segmentation(seg_result, u, v)
+                    yaw = self.find_yaw_from_mask_points(item["mask_pts"])
                     detections_for_vis.append(
                         {
                             "u": u,
                             "v": v,
                             "z": z,
                             "yaw": yaw,
-                            "class_name": str(cls_name),
+                            "ratio": ratio,
+                            "class_name": cls_name,
                             "is_target": True,
                         }
                     )
@@ -257,7 +368,7 @@ class Vision6DPoseManager:
                             "v": v,
                             "z": z,
                             "yaw": yaw,
-                            "detected_class": str(cls_name),
+                            "detected_class": cls_name,
                         }
                     )
 
@@ -335,6 +446,9 @@ class Vision6DPoseManager:
         except Exception:
             target_id = 0
 
+        if self.stop_requested:
+            return False
+
         target_class = ID_TO_CLASS.get(target_id)
         target_key = self._normalize_class_name(target_class) if target_class else None
         model_det, model_seg, pipeline_name = self._select_models(target_id)
@@ -347,15 +461,15 @@ class Vision6DPoseManager:
             return False
 
         image = np.asanyarray(color_frame.get_data())
-        det_result = model_det(image, verbose=False)[0]
-        seg_result = model_seg(image, verbose=False)[0]
+        det_result, seg_result = self.run_yolo_pair(model_det, model_seg, image)
 
         detections_for_vis = []
         best = None
         best_z = float("inf")
+        pre_candidates = []
 
         if det_result.boxes is not None:
-            for box in det_result.boxes:
+            for det_idx, box in enumerate(det_result.boxes):
                 cls_name = det_result.names[int(box.cls[0])]
                 cls_key = self._normalize_class_name(cls_name)
 
@@ -367,36 +481,112 @@ class Vision6DPoseManager:
                 if target_key is not None:
                     is_target = self._target_matches(target_key, cls_key)
 
-                if self.is_border_cut_object(
-                    xyxy=xyxy,
-                    image_shape=image.shape,
+                mask_pts = self.get_matching_mask_points(
+                    det_result=det_result,
                     seg_result=seg_result,
+                    det_idx=det_idx,
                     target_u=u,
                     target_v=v,
-                    match_distance_px=self.match_distance_px,
-                    margin_px=12,
-                ):
+                )
+
+                edge_contact_px = self.get_mask_border_contact_px(
+                    mask_pts=mask_pts,
+                    image_shape=image.shape,
+                    margin_px=self.edge_contact_margin_px,
+                )
+                if edge_contact_px > self.edge_contact_max_px:
                     detections_for_vis.append(
                         {
                             "u": u,
                             "v": v,
                             "z": 0.0,
                             "yaw": 0.0,
-                            "class_name": f"{cls_name}_edge_cut",
+                            "ratio": None,
+                            "class_name": f"{cls_name}_edge{edge_contact_px}px",
+                            "is_target": False,
+                        }
+                    )
+                    continue
+
+                ratio = self.calculate_mask_aspect_ratio(mask_pts)
+                if not self.brick_shape_ratio_pass(cls_key, ratio):
+                    ratio_text = "unknown" if ratio is None else f"{ratio:.2f}"
+                    detections_for_vis.append(
+                        {
+                            "u": u,
+                            "v": v,
+                            "z": 0.0,
+                            "yaw": 0.0,
+                            "ratio": ratio,
+                            "class_name": f"{cls_name}_shape_r{ratio_text}",
                             "is_target": False,
                         }
                     )
                     continue
 
                 z = self.get_valid_depth(depth_frame, u, v)
-                yaw = self.find_yaw_from_segmentation(seg_result, u, v) if z > 0.0 else 0.0
+                if z <= 0.0:
+                    detections_for_vis.append(
+                        {
+                            "u": u,
+                            "v": v,
+                            "z": z,
+                            "yaw": 0.0,
+                            "ratio": ratio,
+                            "class_name": str(cls_name),
+                            "is_target": is_target,
+                        }
+                    )
+                    continue
+
+                pre_candidates.append(
+                    {
+                        "u": u,
+                        "v": v,
+                        "z": float(z),
+                        "ratio": ratio,
+                        "mask_pts": mask_pts,
+                        "class_name": str(cls_name),
+                        "is_target": is_target,
+                    }
+                )
+
+            depth_ref_m = self.get_depth_median_reference(
+                [item["z"] for item in pre_candidates]
+            )
+
+            for item in pre_candidates:
+                z = item["z"]
+                ratio = item["ratio"]
+                cls_name = item["class_name"]
+                u = item["u"]
+                v = item["v"]
+                is_target = item["is_target"]
+
+                if not self.depth_median_filter_pass(z, depth_ref_m):
+                    diff_mm = 0.0 if depth_ref_m is None else abs(z - depth_ref_m) * 1000.0
+                    detections_for_vis.append(
+                        {
+                            "u": u,
+                            "v": v,
+                            "z": z,
+                            "yaw": 0.0,
+                            "ratio": ratio,
+                            "class_name": f"{cls_name}_depth{diff_mm:.0f}mm",
+                            "is_target": False,
+                        }
+                    )
+                    continue
+
+                yaw = self.find_yaw_from_mask_points(item["mask_pts"])
                 detections_for_vis.append(
                     {
                         "u": u,
                         "v": v,
                         "z": z,
                         "yaw": yaw,
-                        "class_name": str(cls_name),
+                        "ratio": ratio,
+                        "class_name": cls_name,
                         "is_target": is_target,
                     }
                 )
@@ -408,7 +598,7 @@ class Vision6DPoseManager:
                         "v": v,
                         "z": z,
                         "yaw": yaw,
-                        "detected_class": str(cls_name),
+                        "detected_class": cls_name,
                     }
 
         label = target_class if target_class else f"all ({pipeline_name})"
@@ -419,6 +609,48 @@ class Vision6DPoseManager:
             best=best,
         )
         return True
+
+    def get_depth_median_reference(self, z_values):
+        """Return median center depth from current YOLO candidates.
+
+        The filter is intentionally light-weight: it does not build a plane or a
+        depth mask. It only compares valid center depths of detections that have
+        already passed edge and shape-ratio filters.
+        """
+        if not self.use_depth_median_filter:
+            return None
+
+        valid = [float(z) for z in z_values if z is not None and np.isfinite(z) and z > 0.0]
+        if len(valid) < self.depth_median_min_samples:
+            return None
+
+        return float(np.median(np.asarray(valid, dtype=np.float32)))
+
+    def depth_median_filter_pass(self, z, depth_ref_m):
+        """Check whether one detection center depth is close to frame median."""
+        if not self.use_depth_median_filter:
+            return True
+        if depth_ref_m is None:
+            return True
+        if z is None or not np.isfinite(z) or z <= 0.0:
+            return False
+
+        return abs(float(z) - float(depth_ref_m)) <= self.depth_median_margin_m
+
+    @staticmethod
+    def run_yolo_pair(model_det, model_seg, image):
+        """Run detection and segmentation models.
+
+        If both references point to the same YOLO object, inference is executed
+        only once. This avoids duplicated best_comp.pt inference in component
+        mode while preserving the original det/seg manager structure.
+        """
+        det_result = model_det(image, verbose=False)[0]
+        if model_seg is model_det:
+            seg_result = det_result
+        else:
+            seg_result = model_seg(image, verbose=False)[0]
+        return det_result, seg_result
 
     def _select_models(self, target_id):
         if target_id in COMPONENT_IDS:
@@ -464,6 +696,9 @@ class Vision6DPoseManager:
             else:
                 label = f"{det['class_name']} Z:invalid"
 
+            if det.get("ratio") is not None:
+                label += f" R:{det['ratio']:.2f}"
+
             cv2.putText(
                 image,
                 label,
@@ -484,36 +719,38 @@ class Vision6DPoseManager:
                 interpolation=cv2.INTER_LINEAR,
             )
 
-        cv2.imshow(self.visualize_window, image)
-        cv2.waitKey(1)
+        try:
+            cv2.imshow(self.visualize_window, image)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q") or key == 27:
+                self.stop_requested = True
+                self._log_info("OpenCV q/ESC pressed. Stop requested.")
+        except Exception as exc:
+            self.stop_requested = True
+            self._log_warn(f"OpenCV visualization failed: {exc}")
 
     def find_yaw_from_segmentation(self, seg_result, target_u, target_v):
-        if seg_result.masks is None or seg_result.boxes is None:
+        """Backward-compatible yaw helper using only the segmentation result."""
+        mask_pts = self.get_nearest_mask_points(
+            result=seg_result,
+            target_u=target_u,
+            target_v=target_v,
+            match_distance_px=self.match_distance_px,
+        )
+        return self.find_yaw_from_mask_points(mask_pts)
+
+    @staticmethod
+    def find_yaw_from_mask_points(mask_pts):
+        if mask_pts is None or len(mask_pts) < 3:
             return 0.0
 
-        min_dist = float("inf")
-        best_mask_pts = None
-
-        for idx, seg_box in enumerate(seg_result.boxes):
-            xyxy = seg_box.xyxy[0].cpu().numpy()
-            seg_u = int((xyxy[0] + xyxy[2]) / 2)
-            seg_v = int((xyxy[1] + xyxy[3]) / 2)
-            dist = ((target_u - seg_u) ** 2 + (target_v - seg_v) ** 2) ** 0.5
-
-            if dist < self.match_distance_px and dist < min_dist:
-                min_dist = dist
-                if len(seg_result.masks.xy) > idx:
-                    best_mask_pts = np.int32(seg_result.masks.xy[idx])
-
-        if best_mask_pts is None or len(best_mask_pts) < 3:
-            return 0.0
-
-        moments = cv2.moments(best_mask_pts)
+        mask_pts = np.asarray(mask_pts, dtype=np.int32)
+        moments = cv2.moments(mask_pts)
         if moments["m00"] == 0:
             return 0.0
 
-        rect = cv2.minAreaRect(best_mask_pts)
-        return self.calculate_refined_yaw(rect)
+        rect = cv2.minAreaRect(mask_pts)
+        return Vision6DPoseManager.calculate_refined_yaw(rect)
 
     @staticmethod
     def calculate_refined_yaw(rect):
@@ -529,94 +766,134 @@ class Vision6DPoseManager:
             yaw += 180.0
         return float(yaw)
 
-    @staticmethod
-    def is_border_cut_object(
-        xyxy,
-        image_shape,
-        seg_result=None,
-        target_u=None,
-        target_v=None,
-        match_distance_px=40.0,
-        margin_px=12,
+    def get_matching_mask_points(
+        self,
+        det_result,
+        seg_result,
+        det_idx,
+        target_u,
+        target_v,
     ):
+        """Return the mask polygon corresponding to a detection.
+
+        Priority:
+        1. det_result mask at the same detection index, if best.pt is a seg model
+        2. nearest mask from seg_result, normally best_old.pt
         """
-        화면 테두리에 걸쳐 잘린 객체인지 판단.
+        if (
+            det_result is not None
+            and det_result.masks is not None
+            and hasattr(det_result.masks, "xy")
+            and len(det_result.masks.xy) > det_idx
+        ):
+            pts = np.asarray(det_result.masks.xy[det_idx], dtype=np.float32)
+            if len(pts) >= 3:
+                return pts
 
-        판단 기준:
-        1. YOLO detection bbox가 이미지 테두리에 margin_px 이내로 닿으면 True
-        2. segmentation mask polygon이 이미지 테두리에 margin_px 이내로 닿으면 True
-
-        Args:
-            xyxy: YOLO bbox 좌표 [x1, y1, x2, y2]
-            image_shape: image.shape, 보통 (H, W, C)
-            seg_result: YOLO segmentation 결과. 없으면 bbox 기준만 사용
-            target_u, target_v: detection bbox 중심 픽셀
-            match_distance_px: detection bbox와 segmentation bbox 매칭 거리
-            margin_px: 테두리로 판단할 픽셀 여유값
-
-        Returns:
-            True  -> 화면 테두리에 걸친 잘린 객체, 비활성화 권장
-            False -> 정상 객체
-        """
-        h, w = image_shape[:2]
-
-        x1, y1, x2, y2 = map(float, xyxy)
-
-        # ------------------------------------------------------------
-        # 1) Detection bbox가 화면 테두리에 닿는지 확인
-        # ------------------------------------------------------------
-        bbox_touches_border = (
-            x1 <= margin_px or
-            y1 <= margin_px or
-            x2 >= (w - 1 - margin_px) or
-            y2 >= (h - 1 - margin_px)
+        return self.get_nearest_mask_points(
+            result=seg_result,
+            target_u=target_u,
+            target_v=target_v,
+            match_distance_px=self.match_distance_px,
         )
 
-        if bbox_touches_border:
-            return True
-
-        # ------------------------------------------------------------
-        # 2) Segmentation mask가 있으면 mask polygon도 확인
-        #    bbox는 안 닿았는데 mask만 경계에 걸치는 경우 방어
-        # ------------------------------------------------------------
-        if seg_result is None:
-            return False
-
-        if seg_result.masks is None or seg_result.boxes is None:
-            return False
-
-        if target_u is None or target_v is None:
-            return False
+    @staticmethod
+    def get_nearest_mask_points(result, target_u, target_v, match_distance_px=40.0):
+        if result is None or result.masks is None or result.boxes is None:
+            return None
 
         min_dist = float("inf")
         best_mask_pts = None
 
-        for idx, seg_box in enumerate(seg_result.boxes):
-            seg_xyxy = seg_box.xyxy[0].cpu().numpy()
-            seg_u = int((seg_xyxy[0] + seg_xyxy[2]) / 2)
-            seg_v = int((seg_xyxy[1] + seg_xyxy[3]) / 2)
-
+        for idx, seg_box in enumerate(result.boxes):
+            xyxy = seg_box.xyxy[0].cpu().numpy()
+            seg_u = int((xyxy[0] + xyxy[2]) / 2)
+            seg_v = int((xyxy[1] + xyxy[3]) / 2)
             dist = ((target_u - seg_u) ** 2 + (target_v - seg_v) ** 2) ** 0.5
 
             if dist < match_distance_px and dist < min_dist:
                 min_dist = dist
-                if len(seg_result.masks.xy) > idx:
-                    best_mask_pts = np.asarray(seg_result.masks.xy[idx], dtype=np.float32)
+                if len(result.masks.xy) > idx:
+                    pts = np.asarray(result.masks.xy[idx], dtype=np.float32)
+                    if len(pts) >= 3:
+                        best_mask_pts = pts
 
-        if best_mask_pts is None or len(best_mask_pts) < 3:
-            return False
+        return best_mask_pts
 
-        xs = best_mask_pts[:, 0]
-        ys = best_mask_pts[:, 1]
+    def brick_shape_ratio_pass(self, cls_key, ratio):
+        """Check 2x2/4x2 brick shape by segmentation minAreaRect ratio.
 
-        mask_touches_border = (
-            np.any(xs <= margin_px) or
-            np.any(ys <= margin_px) or
-            np.any(xs >= (w - 1 - margin_px)) or
-            np.any(ys >= (h - 1 - margin_px))
-        )
+        - 2x2 classes pass when long_side / short_side <= threshold.
+        - 4x2 classes pass when long_side / short_side >= threshold.
+        - Non-brick classes or objects without mask ratio pass unchanged.
+        """
+        if not self.use_shape_ratio_filter:
+            return True
+        if ratio is None:
+            return True
 
-        return bool(mask_touches_border)
+        if cls_key.startswith("2x2"):
+            return ratio <= self.shape_ratio_threshold
+        if cls_key.startswith("4x2"):
+            return ratio >= self.shape_ratio_threshold
+        return True
+
+    @staticmethod
+    def calculate_mask_aspect_ratio(mask_pts):
+        if mask_pts is None or len(mask_pts) < 3:
+            return None
+
+        pts = np.asarray(mask_pts, dtype=np.float32)
+        rect = cv2.minAreaRect(pts)
+        (_, _), (width, height), _ = rect
+        width = float(width)
+        height = float(height)
+
+        if width <= 1e-6 or height <= 1e-6:
+            return None
+
+        return max(width, height) / min(width, height)
+
+    @staticmethod
+    def get_mask_border_contact_px(mask_pts, image_shape, margin_px=2):
+        """Return maximum contact length between a mask and image border in pixels.
+
+        This replaces the older behavior where any bbox/mask border touch disabled
+        the object. A small corner touch is allowed. Only a long contact span over
+        edge_contact_max_px is filtered by the caller.
+        """
+        if mask_pts is None or len(mask_pts) < 3:
+            return 0
+
+        h, w = image_shape[:2]
+        margin_px = max(0, int(margin_px))
+
+        pts = np.asarray(mask_pts, dtype=np.int32)
+        pts[:, 0] = np.clip(pts[:, 0], 0, w - 1)
+        pts[:, 1] = np.clip(pts[:, 1], 0, h - 1)
+
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(mask, [pts], 1)
+
+        max_contact = 0
+
+        # Left / right: measure vertical span of contact rows.
+        left_cols = mask[:, : margin_px + 1]
+        right_cols = mask[:, max(0, w - 1 - margin_px) : w]
+        for strip in (left_cols, right_cols):
+            ys = np.where(np.any(strip > 0, axis=1))[0]
+            if ys.size > 0:
+                max_contact = max(max_contact, int(ys.max() - ys.min() + 1))
+
+        # Top / bottom: measure horizontal span of contact columns.
+        top_rows = mask[: margin_px + 1, :]
+        bottom_rows = mask[max(0, h - 1 - margin_px) : h, :]
+        for strip in (top_rows, bottom_rows):
+            xs = np.where(np.any(strip > 0, axis=0))[0]
+            if xs.size > 0:
+                max_contact = max(max_contact, int(xs.max() - xs.min() + 1))
+
+        return int(max_contact)
 
     @staticmethod
     def get_valid_depth(depth_frame, u, v, search_radius=10):

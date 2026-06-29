@@ -196,7 +196,7 @@ class PlannerNode(Node):
         storage_stations = []    # material_ids 1-8
         batch_stations_1080 = [] # batch_ids 10-80 (known type, 5 blocks each)
         batch_stations_90 = []   # mix batch ID 90 (unknown content)
-        workbench_station_id = None
+        workbench_station_ids = []
         customer_station_id = None
         customer_stations = []
 
@@ -226,18 +226,22 @@ class PlannerNode(Node):
                     f"batch_1080={b1080} batch_90={b90}"
                 )
             if st.station_type in (StationMsg.ST_WORKBENCH, StationMsg.ST_HYBRID):
-                if workbench_station_id is None:
-                    workbench_station_id = st.station_id
+                workbench_station_ids.append(st.station_id)
             if st.station_type == StationMsg.ST_CUSTOMER:
                 customer_station_id = st.station_id
                 customer_stations.append(st)
 
-        if workbench_station_id is None:
+        if not workbench_station_ids:
             raise RuntimeError("No workbench station in arena layout")
         if customer_station_id is None:
             raise RuntimeError("No customer station in arena layout")
 
         home_id = 0
+        workbench_station_id = self._select_fixed_workbench(workbench_station_ids)
+        self.get_logger().info(
+            f"Selected workbench station {workbench_station_id} "
+            f"from candidates {workbench_station_ids}"
+        )
 
         if self._debug_export:
             _dbg['input'] = {
@@ -449,6 +453,14 @@ class PlannerNode(Node):
             self.get_logger().info(f"[DEBUG] Plan exported → {path}")
         except Exception as e:
             self.get_logger().error(f"[DEBUG] Plan export failed: {e}")
+
+    @staticmethod
+    def _select_fixed_workbench(workbench_station_ids):
+        """Prefer the official fixed assembly workbench for each arena side."""
+        for station_id in (6, 16):
+            if station_id in workbench_station_ids:
+                return station_id
+        return workbench_station_ids[0]
 
     def _check_recycle_overflow(
         self, recycle_ids: list, net_aidlist: Counter
@@ -684,9 +696,13 @@ class PlannerNode(Node):
 
     def arm_pick_product(self, station_id: int, product_id: int) -> bool:
         """Pick an assembled product from a customer counter (for recycling)."""
+        return self.arm_pick_products(station_id, [product_id])
+
+    def arm_pick_products(self, station_id: int, product_ids) -> bool:
+        """Pick assembled product(s) from a customer counter (for recycling)."""
         return self._arm_call(
             ARM_PICK,
-            object_ids=[product_id],
+            object_ids=[int(pid) for pid in product_ids],
             location=station_id,
             station_id=station_id,
         )

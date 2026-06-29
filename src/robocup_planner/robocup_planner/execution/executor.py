@@ -117,16 +117,21 @@ class Executor:
 
         self._log(f"Phase 1: collecting {len(recycle_entries)} recycled product(s)")
 
-        # Collect all products from customer counters first.
+        # Collect all products from each customer counter in one visit.
+        entries_by_station = {}
         for entry in recycle_entries:
-            self._log(f"  → navigate to customer station {entry['station_id']} (sub_goal)")
-            self._node.navigate_subgoal(entry['station_id'])
+            entries_by_station.setdefault(entry['station_id'], []).append(entry)
+
+        for station_id, entries in entries_by_station.items():
+            product_ids = [e['recycle_product_id'] for e in entries]
+            self._log(f"  → navigate to customer station {station_id} (sub_goal)")
+            self._node.navigate_subgoal(station_id)
             self._wait_for_intransit_assembly()
-            self._node.navigate_goal(entry['station_id'])
-            self._log(f"  → pick product {entry['recycle_product_id']}")
-            self._node.arm_pick_product(
-                station_id=entry['station_id'],
-                product_id=entry['recycle_product_id'],
+            self._node.navigate_goal(station_id)
+            self._log(f"  → pick product(s) {product_ids}")
+            self._node.arm_pick_products(
+                station_id=station_id,
+                product_ids=product_ids,
             )
             self._node.call_post_process()
 

@@ -24,7 +24,8 @@ class CargoManagerNode(Node):
         super().__init__('cargo_manager_node')
         self.srv = self.create_service(Cargo, '/cargo', self.cargo_cb)
 
-        self.slot_state = {slot: None for slot in [PRODUCT_SLOT] + MATERIAL_SLOTS + ASSEMBLY_SLOTS}
+        # Each slot holds a list of object_ids (ramp supports multiple blocks per slot).
+        self.slot_state = {slot: [] for slot in [PRODUCT_SLOT] + MATERIAL_SLOTS + ASSEMBLY_SLOTS}
 
         # 커스터머 센터 delivery 상태: {station_id: {delivery_idx: object_id or None}}
         self.delivery_state = {}
@@ -36,13 +37,14 @@ class CargoManagerNode(Node):
         action = request.action.upper()
 
         if action == 'FIND_EMPTY':
+            # A slot is empty when its list has no occupants.
             if request.object_id > 8:
                 search_slots = [PRODUCT_SLOT]
             else:
                 search_slots = MATERIAL_SLOTS
 
             for slot in search_slots:
-                if self.slot_state[slot] is None:
+                if len(self.slot_state[slot]) == 0:
                     response.success = True
                     response.slot = slot
                     response.message = f'empty slot found: slot={slot}'
@@ -55,8 +57,8 @@ class CargoManagerNode(Node):
             self.get_logger().warn(f'[CARGO] {response.message}')
 
         elif action == 'FIND_OBJECT':
-            for slot, obj in self.slot_state.items():
-                if obj == request.object_id:
+            for slot, obj_list in self.slot_state.items():
+                if request.object_id in obj_list:
                     response.success = True
                     response.slot = slot
                     response.message = f'object found: object_id={request.object_id}, slot={slot}'
@@ -73,12 +75,14 @@ class CargoManagerNode(Node):
                 response.success = False
                 response.message = f'invalid slot={slot}'
             else:
-                prev = self.slot_state[slot]
-                self.slot_state[slot] = request.object_id
+                self.slot_state[slot].append(request.object_id)
                 name = MATERIAL_NAMES.get(request.object_id, f'product_id={request.object_id}')
                 response.success = True
                 response.slot = slot
-                response.message = f'slot={slot} updated: {prev} -> object_id={request.object_id} ({name})'
+                response.message = (
+                    f'slot={slot} set: object_id={request.object_id} ({name}), '
+                    f'contents={self.slot_state[slot]}'
+                )
                 self.get_logger().info(f'[CARGO] {response.message}')
 
         elif action == 'CLEAR':
@@ -87,20 +91,41 @@ class CargoManagerNode(Node):
                 response.success = False
                 response.message = f'invalid slot={slot}'
             else:
-                self.slot_state[slot] = None
-                response.success = True
-                response.slot = slot
-                response.message = f'slot={slot} cleared'
+                obj_list = self.slot_state[slot]
+                obj_id = request.object_id
+                if obj_id != 0 and obj_id in obj_list:
+                    obj_list.remove(obj_id)  # removes first occurrence
+                    response.success = True
+                    response.slot = slot
+                    response.message = (
+                        f'slot={slot} cleared object_id={obj_id}, '
+                        f'remaining={obj_list}'
+                    )
+                elif obj_list:
+                    # Fallback: remove front item (FIFO for ramp, no object_id specified)
+                    removed = obj_list.pop(0)
+                    response.success = True
+                    response.slot = slot
+                    response.message = (
+                        f'slot={slot} cleared first item={removed} '
+                        f'(no object_id specified), remaining={obj_list}'
+                    )
+                else:
+                    response.success = True
+                    response.slot = slot
+                    response.message = f'slot={slot} already empty'
                 self.get_logger().info(f'[CARGO] {response.message}')
 
         elif action == 'STATUS':
             lines = []
-            for slot, obj in self.slot_state.items():
-                if obj is None:
-                    name = 'empty'
+            for slot, obj_list in self.slot_state.items():
+                if not obj_list:
+                    names = 'empty'
                 else:
-                    name = MATERIAL_NAMES.get(obj, f'product_id={obj}')
-                lines.append(f'slot={slot}: {name}')
+                    names = ', '.join(
+                        MATERIAL_NAMES.get(o, f'product_id={o}') for o in obj_list
+                    )
+                lines.append(f'slot={slot}: [{names}]')
             response.success = True
             response.message = ' | '.join(lines)
             self.get_logger().info(f'[CARGO] STATUS: {response.message}')

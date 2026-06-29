@@ -88,7 +88,34 @@ class CargoSlot:
         return self.cargo_id * 10 + placement_idx
 
     def remove(self, placement_idx: int) -> None:
+        """Remove block at placement_idx; blocks at higher indices slide down the ramp."""
+        if self._contents.get(placement_idx) is None:
+            return
         self._contents[placement_idx] = None
+
+        # Collect blocks above the removed position (higher index = higher on ramp).
+        # Process ascending so lower blocks are re-placed first, freeing space for higher ones.
+        to_slide = sorted(
+            [(idx, mat) for idx, mat in self._contents.items()
+             if idx > placement_idx and mat is not None]
+        )
+        if not to_slide:
+            return
+
+        for idx, _ in to_slide:
+            self._contents[idx] = None
+
+        for old_idx, mat_id in to_slide:
+            size = MATERIAL_SIZE.get(mat_id, '2x2')
+            occupied = self._occupied_cols()
+            placed = False
+            for candidate in sorted(_SIZE_PLACEMENTS[size]):  # lowest first
+                if candidate < old_idx and not _cols_for(candidate).intersection(occupied):
+                    self._contents[candidate] = mat_id
+                    placed = True
+                    break
+            if not placed:
+                self._contents[old_idx] = mat_id  # no lower position available, stay
 
     def contents(self) -> List[Tuple[int, int]]:
         """List of (placement_idx, material_id) for occupied placements."""

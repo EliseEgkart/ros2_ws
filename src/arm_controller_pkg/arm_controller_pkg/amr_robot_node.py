@@ -920,7 +920,8 @@ class AmrRobotNode(Node):
 
         try:
             if action == 'LOAD':
-                results = self.sequence_load_multi(list(request.object_ids))
+                results = self.sequence_load_multi(
+                    list(request.object_ids), list(request.slide_ids))
             elif action == 'UNLOAD':
                 results = self.sequence_unload_multi(
                     list(request.object_ids), request.station_id)
@@ -947,12 +948,18 @@ class AmrRobotNode(Node):
 
     # --- LOAD 시퀀스 ---
 
-    def sequence_load_multi(self, object_ids):
+    def sequence_load_multi(self, object_ids, slide_ids=None):
+        # slide_ids encoding: cargo_id * 10 + placement_idx  →  cargo slot = slide_id // 10
+        target_slots = []
+        if slide_ids and len(slide_ids) == len(object_ids):
+            target_slots = [sid // 10 for sid in slide_ids]
+
         results = []
         last_idx = len(object_ids) - 1
         for idx, object_id in enumerate(object_ids):
             is_last = (idx == last_idx)
-            result = self.sequence_load(object_id, is_last=is_last)
+            target_slot = target_slots[idx] if target_slots else None
+            result = self.sequence_load(object_id, is_last=is_last, target_slot=target_slot)
             results.append(result)
             if not result['success']:
                 self.get_logger().error(f'[AMR] load failed at object_id={object_id}, stopping')
@@ -970,7 +977,7 @@ class AmrRobotNode(Node):
         self.go_moving_pose()
         return results
 
-    def sequence_load(self, object_id, is_last=False):
+    def sequence_load(self, object_id, is_last=False, target_slot=None):
         if not self.is_robot_ready():
             return {
                 'success': False,
@@ -993,18 +1000,23 @@ class AmrRobotNode(Node):
 
         self.get_logger().info(f'[LOAD START] object_id={object_id}, target={target_color}')
 
-        # 1. 빈 슬롯 확인
-        res = self.call_cargo('FIND_EMPTY', object_id=object_id)
-        if not res or not res.success:
-            self.get_logger().error('[AMR] no empty slot')
-            return {
-                'success': False,
-                'slot': -1,
-                'object_id': object_id,
-                'message': 'no empty slot',
-            }
-        slot = res.slot
-        self.get_logger().info(f'[CARGO] empty slot: {slot}')
+        # 1. 목표 슬롯 결정: planner가 slide_ids를 지정한 경우 그대로 사용,
+        #    아니면 cargo_manager에서 FIND_EMPTY로 찾는다.
+        if target_slot is not None:
+            slot = target_slot
+            self.get_logger().info(f'[CARGO] using planner-assigned slot: {slot}')
+        else:
+            res = self.call_cargo('FIND_EMPTY', object_id=object_id)
+            if not res or not res.success:
+                self.get_logger().error('[AMR] no empty slot')
+                return {
+                    'success': False,
+                    'slot': -1,
+                    'object_id': object_id,
+                    'message': 'no empty slot',
+                }
+            slot = res.slot
+            self.get_logger().info(f'[CARGO] empty slot found: {slot}')
 
         # 2. 초기화
         if not self.call_gripper(False):
@@ -1344,7 +1356,7 @@ class AmrRobotNode(Node):
 
         # 7. 슬롯에서 물체를 들어 올렸으므로 cargo 상태를 먼저 비운다.
         # 이후 복귀 실패가 나도 cargo_manager의 슬롯 상태는 실제 물리 상태와 맞는다.
-        res = self.call_cargo('CLEAR', slot=slot)
+        res = self.call_cargo('CLEAR', slot=slot, object_id=object_id)
         if not res or not res.success:
             self.get_logger().error('[AMR] cargo CLEAR failed')
             return {
@@ -1589,7 +1601,7 @@ class AmrRobotNode(Node):
                 }
 
             # 8. 카고 슬롯 비우기
-            res = self.call_cargo('CLEAR', slot=slot)
+            res = self.call_cargo('CLEAR', slot=slot, object_id=material_id)
             if not res or not res.success:
                 self.get_logger().error('[AMR] cargo CLEAR failed')
                 return {

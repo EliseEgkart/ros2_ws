@@ -58,10 +58,10 @@ from robocup_planner.product_catalog import (
 WB_PRODUCE = 'PRODUCE'
 WB_RECYCLE = 'RECYCLE'
 
-# Arm Cargo.srv action strings (agree with arm team)
-ARM_PICK = 'PICK'
-ARM_PLACE = 'PLACE'
-ARM_DELIVER = 'DELIVER'
+# Arm ArmCommand.srv action strings (matches amr_robot_node / mock_arm_node)
+ARM_PICK = 'LOAD'
+ARM_PLACE = 'UNLOAD'
+ARM_DELIVER = 'UNLOAD'
 
 
 class PlannerNode(Node):
@@ -427,6 +427,7 @@ class PlannerNode(Node):
         action: str,
         object_ids: list,
         location: int = 0,
+        station_id: int = None,
         slide_ids: list = None,
     ) -> bool:
         """Send one ArmCommand service call to the arm. Blocks until response."""
@@ -436,6 +437,7 @@ class PlannerNode(Node):
         req.action = action
         req.object_ids = [int(x) for x in object_ids]
         req.location = int(location)
+        req.station_id = int(station_id if station_id is not None else location)
         req.slide_ids = [int(x) for x in (slide_ids or [])]
 
         future = self._arm_client.call_async(req)
@@ -456,6 +458,7 @@ class PlannerNode(Node):
             ARM_PICK,
             object_ids=[material_id],
             location=station_id,
+            station_id=station_id,
             slide_ids=[manipulator_slot],
         )
 
@@ -465,24 +468,27 @@ class PlannerNode(Node):
             ARM_PICK,
             object_ids=[product_id],
             location=station_id,
+            station_id=station_id,
             slide_ids=[0],
         )
 
-    def arm_unload_material(self, cargo_id: int, placement_idx: int) -> bool:
+    def arm_unload_material(
+        self, cargo_id: int, placement_idx: int, object_id: int
+    ) -> bool:
         """Unload a material block from cargo (drop at workbench)."""
         slot_value = cargo_id * 10 + placement_idx
         return self._arm_call(
             ARM_PLACE,
-            object_ids=[0],
+            object_ids=[object_id],
             location=0,
             slide_ids=[slot_value],
         )
 
-    def arm_deliver(self, from_cargo_id: int) -> bool:
+    def arm_deliver(self, from_cargo_id: int, product_id: int = 0) -> bool:
         """Deliver a finished product from cargo to the customer counter."""
         return self._arm_call(
             ARM_DELIVER,
-            object_ids=[0],
+            object_ids=[product_id],
             location=0,
             slide_ids=[from_cargo_id],
         )

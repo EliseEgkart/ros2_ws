@@ -63,6 +63,8 @@ class Executor:
         self._mid_cursor: int = 0
         # Prevent re-entrant workbench trips.
         self._en_route_to_wb: bool = False
+        # FIFO queue of product_ids assembled at workbench and waiting on cargo 1.
+        self._cargo1_queue: List[int] = []
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -246,6 +248,7 @@ class Executor:
             self._node.wb_task('PRODUCE', ready_pid)
             self._pending_wb.remove(ready_pid)
             self._cargo.add_finished_product()
+            self._cargo1_queue.append(ready_pid)
             self._pending_deliveries += 1
         elif forced:
             # Overflow drop: unload whatever is on cargo to free space.
@@ -260,13 +263,13 @@ class Executor:
         if slots is None:
             return
         for cargo_id, placement_idx, mat_id in slots:
-            self._node.arm_unload_material(cargo_id, placement_idx)
+            self._node.arm_unload_material(cargo_id, placement_idx, mat_id)
             self._cargo.remove_material(cargo_id, placement_idx)
 
     def _unload_all_materials(self) -> None:
         """Drop everything in cargo 2-6 at the workbench (overflow buffer)."""
         for cargo_id, placement_idx, mat_id in list(self._cargo.all_materials()):
-            self._node.arm_unload_material(cargo_id, placement_idx)
+            self._node.arm_unload_material(cargo_id, placement_idx, mat_id)
             self._cargo.remove_material(cargo_id, placement_idx)
 
     # ------------------------------------------------------------------
@@ -285,8 +288,9 @@ class Executor:
 
         # Deliver products from cargo 1 (assembled at workbench).
         while self._cargo.finished_on_cargo1 > 0:
-            self._log("  → deliver product from cargo 1")
-            self._node.arm_deliver(from_cargo_id=1)
+            product_id = self._cargo1_queue.pop(0) if self._cargo1_queue else 0
+            self._log(f"  → deliver product {product_id} from cargo 1")
+            self._node.arm_deliver(from_cargo_id=1, product_id=product_id)
             self._cargo.consume_finished_product()
             self._pending_deliveries -= 1
 
@@ -295,7 +299,7 @@ class Executor:
             self._log(
                 f"  → deliver in-transit product {slot.product_id} from cargo {slot.cargo_id}"
             )
-            self._node.arm_deliver(from_cargo_id=slot.cargo_id)
+            self._node.arm_deliver(from_cargo_id=slot.cargo_id, product_id=slot.product_id)
             self._allocator.free_slot(slot.cargo_id)
             self._pending_deliveries -= 1
 

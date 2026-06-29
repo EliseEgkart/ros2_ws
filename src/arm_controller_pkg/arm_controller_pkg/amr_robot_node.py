@@ -8,7 +8,7 @@ from std_srvs.srv import Trigger
 import rbpodo as rb
 import numpy as np
 import time
-import threading
+import threading 
 
 
 ROBOT_IP = "10.0.2.8"
@@ -56,22 +56,22 @@ SLOT_WAYPOINTS = {
 # 인덱스 0~5: 내려놓는 순서에 따라 사용 (unload 전용)
 DELIVERY_WAYPOINTS = {
     0: [
-        np.array([-106.29, 35.41, 98.92, 0.0, 45.67, -16.28]),
+        np.array([-106.29, 23.23, 96.43, 0.0, 60.35, -16.28]),
     ],
     1: [
-        np.array([-91.40, 32.81, 103.23, 0.0, 43.95, -1.39]),
+        np.array([-91.40, 20.078, 100.7, 0.0, 59.22, -1.39]),
     ],
     2: [
-        np.array([-75.10, 34.5, 100.44, 0.0, 45.06, 14.91]),
+        np.array([-75.10, 22.13, 97.94, 0.0, 59.94, 14.91]),
     ],
     3: [
-        np.array([-78.43, 52.72, 68.95, 0.0, 58.33, 11.58]),
+        np.array([-78.43, 43.34, 66.28, 0.0, 70.38, 11.58]),
     ],
     4: [
-        np.array([-90.71, 51.06, 71.88, 0.0, 57.06, -0.7]),
+        np.array([-90.71, 41.46, 69.26, 0.0, 69.28, -0.71]),
     ],
     5: [
-        np.array([-103.28, 53.86, 66.91, 0.0, 59.23, -13.27]),
+        np.array([-103.28, 44.63, 64.19, 0.0, 71.19, -13.28]),
     ],
     # 6번: 완성품(Products) 전용 내려놓기 포인트.
     #      완성품 unload 는 delivery_idx 와 무관하게 무조건 이 포인트로 간다.
@@ -178,8 +178,8 @@ UNLOAD_Z_DOWN_MM = 55.0
 UNLOAD_Z_UP_MM = -55.0
 
 # --- DELIVERY Z 상수 (배달 위치에서 물체 내려놓을 때, 일반 재료 전용) ---
-DELIVERY_Z_DOWN_MM = 15.0
-DELIVERY_Z_UP_MM = -15.0
+DELIVERY_Z_DOWN_MM = 115.0
+DELIVERY_Z_UP_MM = -115.0
 
 
 # --- 완성품(Products) 전용 delivery Z 상수 (층별 3단계) ---

@@ -32,6 +32,10 @@ PRODUCT_SLOT = 1
 MATERIAL_SLOTS = [2, 3, 4, 5, 6]
 ASSEMBLY_SLOTS = [7, 8]  # 조립 슬롯 (FIND_EMPTY 검색 대상 아님)
 
+# 경기 당일 워크벤치 스테이션 아이디를 여기에 입력
+# 워크벤치 스테이션은 delivery 기록을 하지 않음
+WORKBENCH_STATION_IDS = {1}
+
 
 class CargoManagerNode(Node):
     def __init__(self):
@@ -167,6 +171,12 @@ class CargoManagerNode(Node):
 
         elif action == 'FIND_DELIVERY_EMPTY':
             station_id = request.station_id
+            if station_id in WORKBENCH_STATION_IDS:
+                response.success = True
+                response.slot = 0
+                response.message = f'workbench station={station_id}: delivery tracking skipped'
+                self.get_logger().info(f'[CARGO] {response.message}')
+                return response
             station = self.delivery_state.setdefault(station_id, {})
             for idx in range(6):
                 if station.get(idx) is None:
@@ -182,6 +192,12 @@ class CargoManagerNode(Node):
 
         elif action == 'SET_DELIVERY':
             station_id = request.station_id
+            if station_id in WORKBENCH_STATION_IDS:
+                response.success = True
+                response.slot = request.slot
+                response.message = f'workbench station={station_id}: delivery tracking skipped'
+                self.get_logger().info(f'[CARGO] {response.message}')
+                return response
             idx = request.slot
             station = self.delivery_state.setdefault(station_id, {})
             prev = station.get(idx)
@@ -197,6 +213,12 @@ class CargoManagerNode(Node):
 
         elif action == 'CLEAR_DELIVERY':
             station_id = request.station_id
+            if station_id in WORKBENCH_STATION_IDS:
+                response.success = True
+                response.slot = request.slot
+                response.message = f'workbench station={station_id}: delivery tracking skipped'
+                self.get_logger().info(f'[CARGO] {response.message}')
+                return response
             idx = request.slot
             station = self.delivery_state.setdefault(station_id, {})
             station[idx] = None
@@ -207,6 +229,11 @@ class CargoManagerNode(Node):
 
         elif action == 'STATUS_DELIVERY':
             station_id = request.station_id
+            if station_id in WORKBENCH_STATION_IDS:
+                response.success = True
+                response.message = f'workbench station={station_id}: no delivery tracking'
+                self.get_logger().info(f'[CARGO] {response.message}')
+                return response
             station = self.delivery_state.get(station_id, {})
             lines = []
             for idx in range(6):

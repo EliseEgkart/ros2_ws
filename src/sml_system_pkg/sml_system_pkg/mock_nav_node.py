@@ -54,6 +54,9 @@ class MockNavNode(Node):
             if configured_start < 0
             else configured_start
         )
+        # Track whether the AMR is stopped at a sub_goal (mid-approach).
+        # When the next goal leg targets the same station, only 20% remains.
+        self._at_subgoal_of: int = -1
         self.station_coords = self._load_station_coords()
 
         self._action_server = ActionServer(
@@ -129,11 +132,31 @@ class MockNavNode(Node):
         return overhead + dist / speed
 
     def _execute_cb(self, goal_handle):
-        station_id = int(goal_handle.request.station_id)
+        raw_id = int(goal_handle.request.station_id)
+
+        # Convention: negative station_id = navigate to sub_goal of abs(station_id).
+        # The sub_goal is the approach waypoint; the AMR does not dock yet.
+        # Positive station_id = navigate to the docking goal (final parking position).
+        is_subgoal = raw_id < 0
+        station_id = abs(raw_id)
+
+        # If the AMR is already at the sub_goal of this station (because
+        # navigate_subgoal() was just called), only ~20% of the distance remains
+        # for the short precision-parking leg.
+        already_at_subgoal = (not is_subgoal) and (self._at_subgoal_of == station_id)
+
         delay_sec = self._travel_delay(station_id)
+        if is_subgoal:
+            # sub_goal is ~80% of the full station-to-station distance.
+            delay_sec *= 0.8
+        elif already_at_subgoal:
+            # Only the short sub_goal → goal leg remains (~20% of total).
+            delay_sec *= 0.2
+
+        phase = 'sub_goal' if is_subgoal else 'goal'
         self.get_logger().info(
             f'[MOCK NAV] goal 수신: from={self.current_station_id}, '
-            f'to={station_id}, delay={delay_sec:.2f}s'
+            f'to={station_id} ({phase}), delay={delay_sec:.2f}s'
         )
 
         fb = NavTask.Feedback()
@@ -142,16 +165,25 @@ class MockNavNode(Node):
 
         time.sleep(delay_sec)
 
-        fb.status = 'ARRIVED'
+        fb.status = 'AT_SUBGOAL' if is_subgoal else 'ARRIVED'
         goal_handle.publish_feedback(fb)
 
-        self.current_station_id = station_id
+        if is_subgoal:
+            # Record that the AMR is now waiting at the sub_goal of station_id.
+            self._at_subgoal_of = station_id
+        else:
+            # Fully docked — update effective position and clear sub_goal state.
+            self.current_station_id = station_id
+            self._at_subgoal_of = -1
+
         goal_handle.succeed()
 
         result = NavTask.Result()
         result.success = True
         result.fail_reason = ''
-        self.get_logger().info(f'[MOCK NAV] 완료: station_id={station_id}')
+        self.get_logger().info(
+            f'[MOCK NAV] 완료: station_id={station_id} ({phase})'
+        )
         return result
 
     def _post_process_cb(self, request, response):

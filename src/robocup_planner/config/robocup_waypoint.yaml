@@ -1,0 +1,292 @@
+waypoints:
+  station_1_sub_goal:
+    position:
+      x: -0.098497
+      y: -1.995955
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 1.0
+      w: 0.0
+  station_1_goal:
+    position:
+      x: -0.598155
+      y: -1.995955
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 1.0
+      w: 0.0
+  station_2_sub_goal:
+    position:
+      x: -0.103208
+      y: -2.882015
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 1.0
+      w: 0.0
+  station_2_goal:
+    position:
+      x: -0.60226
+      y: -2.882015
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 1.0
+      w: 0.0
+  station_3_sub_goal:
+    position:
+      x: 0.15
+      y: -2.55
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: -0.707107
+      w: 0.707107
+  station_3_goal:
+    position:
+      x: 0.15
+      y: -3.05
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: -0.707107
+      w: 0.707107
+  station_4_sub_goal:
+    position:
+      x: 1.1
+      y: -2.5
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: -0.707107
+      w: 0.707107
+  station_4_goal:
+    position:
+      x: 1.1
+      y: -3.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: -0.707107
+      w: 0.707107
+  station_5_sub_goal:
+    position:
+      x: 1.75
+      y: -1.65
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.707107
+      w: 0.707107
+  station_5_goal:
+    position:
+      x: 1.75
+      y: -1.15
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.707107
+      w: 0.707107
+  station_6_sub_goal:
+    position:
+      x: 2.75
+      y: -1.05
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: -0.707107
+      w: 0.707107
+  station_6_goal:
+    position:
+      x: 2.75
+      y: -1.55
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: -0.707107
+      w: 0.707107
+  station_7_sub_goal:
+    position:
+      x: 3.0
+      y: -1.35
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+  station_7_goal:
+    position:
+      x: 3.5
+      y: -1.35
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+  station_8_sub_goal:
+    position:
+      x: 3.35
+      y: -0.3
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+  station_8_goal:
+    position:
+      x: 3.85
+      y: -0.3
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+  station_0_goal:
+    position:
+      x: -0.6
+      y: 0.05
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: -0.486281
+      w: 0.873802
+sequence:
+- station_1_sub_goal
+- station_1_goal
+- station_2_sub_goal
+- station_2_goal
+- station_3_sub_goal
+- station_3_goal
+- station_4_sub_goal
+- station_4_goal
+- station_5_sub_goal
+- station_5_goal
+- station_6_sub_goal
+- station_6_goal
+- station_7_sub_goal
+- station_7_goal
+- station_8_sub_goal
+- station_8_goal
+- station_0_goal
+frame_id: map
+stations:
+  0:
+    name: station_0
+    sequence:
+    - station_0_goal
+    post_process: true
+  1:
+    name: station_1
+    sequence:
+    - station_1_sub_goal
+    - station_1_goal
+    post_process: true
+  2:
+    name: station_2
+    sequence:
+    - station_2_sub_goal
+    - station_2_goal
+    post_process: true
+  3:
+    name: station_3
+    sequence:
+    - station_3_sub_goal
+    - station_3_goal
+    post_process: true
+  4:
+    name: station_4
+    sequence:
+    - station_4_sub_goal
+    - station_4_goal
+    post_process: true
+  5:
+    name: station_5
+    sequence:
+    - station_5_sub_goal
+    - station_5_goal
+    post_process: true
+  6:
+    name: station_6
+    sequence:
+    - station_6_sub_goal
+    - station_6_goal
+    post_process: true
+  7:
+    name: station_7
+    sequence:
+    - station_7_sub_goal
+    - station_7_goal
+    post_process: true
+  8:
+    name: station_8
+    sequence:
+    - station_8_sub_goal
+    - station_8_goal
+    post_process: true
+  9:
+    name: station_9
+    sequence: []
+    post_process: true
+  10:
+    name: station_10
+    sequence: []
+    post_process: true
+  11:
+    name: station_11
+    sequence: []
+    post_process: true
+  12:
+    name: station_12
+    sequence: []
+    post_process: true
+  13:
+    name: station_13
+    sequence: []
+    post_process: true
+  14:
+    name: station_14
+    sequence: []
+    post_process: true
+  15:
+    name: station_15
+    sequence: []
+    post_process: true
+  16:
+    name: station_16
+    sequence: []
+    post_process: true
+  17:
+    name: station_17
+    sequence: []
+    post_process: true
+  18:
+    name: station_18
+    sequence: []
+    post_process: true
+  19:
+    name: station_19
+    sequence: []
+    post_process: true
+  20:
+    name: station_20
+    sequence: []
+    post_process: true

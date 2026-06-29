@@ -14,6 +14,18 @@ Cargo overflow rule (A1):
 In-transit assembly rule (M1 clarification):
   Completed products on cargo 7/8 are delivered directly from cargo 7/8
   to the customer counter — they do NOT move to cargo 1 first.
+
+Two-phase navigation rule (sub_goal / goal):
+  Every station approach is split into two legs:
+    1. navigate_subgoal(id)  — fast cruise to the approach waypoint.
+       At sub_goal: wait_for_intransit_assembly() blocks until the arm
+       finishes any ASSEMBLE operation started during the previous leg.
+    2. navigate_goal(id)     — slow precision parking to the docking point.
+       No arm assembly commands are issued during this phase.
+
+  When delivering to the customer counter, if in-transit cargo-7/8
+  assembly is still running on arrival at sub_goal, the executor waits
+  there until the arm finishes, then proceeds to goal.
 """
 
 import threading
@@ -105,8 +117,10 @@ class Executor:
 
         # Collect all products from customer counters first.
         for entry in recycle_entries:
-            self._log(f"  → navigate to customer station {entry['station_id']}")
-            self._node.navigate(entry['station_id'])
+            self._log(f"  → navigate to customer station {entry['station_id']} (sub_goal)")
+            self._node.navigate_subgoal(entry['station_id'])
+            self._node.wait_for_intransit_assembly()
+            self._node.navigate_goal(entry['station_id'])
             self._log(f"  → pick product {entry['recycle_product_id']}")
             self._node.arm_pick_product(
                 station_id=entry['station_id'],
@@ -114,8 +128,11 @@ class Executor:
             )
 
         # Bring all collected products to the workbench for disassembly.
-        self._log(f"  → navigate to workbench {self._plan.workbench_station_id}")
-        self._node.navigate(self._plan.workbench_station_id)
+        sid = self._plan.workbench_station_id
+        self._log(f"  → navigate to workbench {sid} (sub_goal)")
+        self._node.navigate_subgoal(sid)
+        self._node.wait_for_intransit_assembly()
+        self._node.navigate_goal(sid)
 
         for entry in recycle_entries:
             pid = entry['recycle_product_id']
@@ -145,11 +162,17 @@ class Executor:
 
         while self._mid_cursor < len(storage_entries):
             entry = storage_entries[self._mid_cursor]
+            sid = entry['station_id']
             self._log(
                 f"[{self._mid_cursor}/{len(storage_entries)-1}] "
-                f"navigate to storage station {entry['station_id']}"
+                f"navigate to storage station {sid}"
             )
-            self._node.navigate(entry['station_id'])
+
+            # Two-phase approach: cruise to sub_goal (arm may still assemble),
+            # then wait for assembly, then precision-park at goal (arm idle).
+            self._node.navigate_subgoal(sid)
+            self._node.wait_for_intransit_assembly()
+            self._node.navigate_goal(sid)
 
             # Pick each required material from this station.
             for mat_id in entry['pickup_materials']:
@@ -164,11 +187,13 @@ class Executor:
                         self._log(f"  !! still no space for mat {mat_id} — skipping")
                         continue
                     # Re-navigate to the storage station after the workbench detour.
-                    self._node.navigate(entry['station_id'])
+                    self._node.navigate_subgoal(sid)
+                    self._node.wait_for_intransit_assembly()
+                    self._node.navigate_goal(sid)
 
                 self._log(f"  → pick mat {mat_id} → cargo {cargo_id}")
                 self._node.arm_pick_material(
-                    station_id=entry['station_id'],
+                    station_id=sid,
                     material_id=mat_id,
                 )
                 self._on_material_placed(mat_id, cargo_id)
@@ -207,8 +232,12 @@ class Executor:
             complete = self._allocator.confirm_placed(cargo_id, material_id)
             if complete:
                 self._log(
-                    f"  [DONE] in-transit assembly complete on cargo {cargo_id}"
+                    f"  [DONE] in-transit assembly ready on cargo {cargo_id} — "
+                    "starting ASSEMBLE async (arm works while AMR moves)"
                 )
+                product_id = self._allocator.get_slot_product(cargo_id)
+                if product_id is not None:
+                    self._node.arm_assemble_intransit_async(product_id, cargo_id)
                 self._pending_deliveries += 1
 
     # ------------------------------------------------------------------
@@ -235,8 +264,11 @@ class Executor:
         self._en_route_to_wb = True
         self.wb_signal.clear()
 
-        self._log(f"  → divert to workbench {self._plan.workbench_station_id}")
-        self._node.navigate(self._plan.workbench_station_id)
+        wid = self._plan.workbench_station_id
+        self._log(f"  → divert to workbench {wid}")
+        self._node.navigate_subgoal(wid)
+        self._node.wait_for_intransit_assembly()
+        self._node.navigate_goal(wid)
 
         ready_pid = self._cargo.can_assemble_for_workbench(self._pending_wb)
         if ready_pid is not None:
@@ -280,8 +312,17 @@ class Executor:
         if not self._should_deliver():
             return
 
-        self._log(f"  → navigate to customer {self._plan.customer_station_id}")
-        self._node.navigate(self._plan.customer_station_id)
+        cid = self._plan.customer_station_id
+
+        # Navigate to sub_goal first: if in-transit assembly is still running
+        # (arm hasn't finished ASSEMBLE on cargo 7/8), wait here before the
+        # precision-parking approach — satisfying the sub_goal hold requirement.
+        self._log(f"  → navigate to customer {cid} (sub_goal)")
+        self._node.navigate_subgoal(cid)
+        self._log("  → waiting for in-transit assembly at sub_goal (if any)")
+        self._node.wait_for_intransit_assembly()
+        # Final approach — arm is idle during sub_goal → goal phase.
+        self._node.navigate_goal(cid)
 
         # Deliver products from cargo 1 (assembled at workbench).
         while self._cargo.finished_on_cargo1 > 0:

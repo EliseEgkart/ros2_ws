@@ -108,3 +108,15 @@ class CargoAllocator:
 
     def is_cargo_allocated(self, cargo_id: int) -> bool:
         return self._slots.get(cargo_id) is not None
+
+    def get_slot_product(self, cargo_id: int) -> Optional[int]:
+        """Return the product_id allocated to cargo_id, or None."""
+        slot = self._slots.get(cargo_id)
+        return slot.product_id if slot is not None else None
+
+    def has_in_progress(self) -> bool:
+        """True if any cargo 7/8 slot has blocks placed but is not yet complete."""
+        return any(
+            s is not None and len(s.placed) > 0 and not s.is_complete
+            for s in self._slots.values()
+        )

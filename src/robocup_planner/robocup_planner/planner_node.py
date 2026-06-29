@@ -119,6 +119,10 @@ class PlannerNode(Node):
         self._active_executor: Optional[Executor] = None
         self._exec_lock = threading.Lock()
 
+        # Pending in-transit ASSEMBLE events (arm works asynchronously during travel)
+        self._intransit_events: list = []
+        self._intransit_lock = threading.Lock()
+
         self.get_logger().info("RoboCup Planner ready — waiting for task")
 
     # ------------------------------------------------------------------
@@ -368,7 +372,7 @@ class PlannerNode(Node):
     # ------------------------------------------------------------------
 
     def navigate(self, station_id: int) -> bool:
-        """Block until the AMR reaches station_id. Returns True on success."""
+        """Navigate directly to station_id goal (positive) or sub_goal (negative)."""
         self._nav_client.wait_for_server()
 
         done = threading.Event()
@@ -395,6 +399,72 @@ class PlannerNode(Node):
         if not success_holder[0]:
             self.get_logger().error(f"Navigation to station {station_id} failed")
         return success_holder[0]
+
+    def navigate_subgoal(self, station_id: int) -> bool:
+        """Navigate to the sub_goal (approach) position of station_id.
+
+        Convention: negative station_id signals the nav server to stop at
+        the sub_goal waypoint (station_N_sub_goal) instead of the docking goal.
+        """
+        self.get_logger().info(f"[NAV] → sub_goal of station {station_id}")
+        return self.navigate(-abs(station_id))
+
+    def navigate_goal(self, station_id: int) -> bool:
+        """Navigate the final leg from sub_goal to the docking goal of station_id.
+
+        No arm assembly should occur during this phase (precision parking).
+        """
+        self.get_logger().info(f"[NAV] → goal of station {station_id}")
+        return self.navigate(abs(station_id))
+
+    def arm_assemble_intransit_async(self, product_id: int, cargo_id: int) -> None:
+        """Start in-transit assembly on cargo_id asynchronously.
+
+        The arm stacks blocks on cargo 7/8 while the AMR moves.  Callers must
+        invoke wait_for_intransit_assembly() before navigate_goal() to ensure
+        the arm is idle during the precision-parking phase.
+        """
+        event = threading.Event()
+        with self._intransit_lock:
+            self._intransit_events.append(event)
+
+        def _assemble():
+            self.get_logger().info(
+                f"[ARM] ASSEMBLE product={product_id} cargo={cargo_id}"
+            )
+            success = self._arm_call(
+                'ASSEMBLE',
+                object_ids=[product_id],
+                location=cargo_id,
+                station_id=cargo_id,
+            )
+            if not success:
+                self.get_logger().warning(
+                    f"[ARM] ASSEMBLE failed: product={product_id}"
+                )
+            event.set()
+
+        threading.Thread(
+            target=_assemble, daemon=True, name=f'assemble_{product_id}'
+        ).start()
+
+    def wait_for_intransit_assembly(self) -> None:
+        """Block until all pending in-transit ASSEMBLE operations finish.
+
+        Call this at sub_goal before navigate_goal() so the arm is idle
+        during the sub_goal → goal precision-parking segment.
+        """
+        with self._intransit_lock:
+            events = list(self._intransit_events)
+            self._intransit_events.clear()
+
+        if events:
+            self.get_logger().info(
+                f"[ARM] Waiting for {len(events)} in-transit assembly operation(s)"
+            )
+            for ev in events:
+                ev.wait()
+            self.get_logger().info("[ARM] All in-transit assemblies complete")
 
     def wb_task(self, work_type: str, product_id: int) -> bool:
         """Block until the workbench completes the requested work."""

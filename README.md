@@ -32,40 +32,53 @@ src/
 
 ## 시스템 아키텍처
 
+### 실전 스택 (robocup_planner — 현행)
+
 ```
 [order_server]
-      │ /sml/task (sml_msgs/Task)
+      │ /sml/task (sml_msgs/Task, TRANSIENT_LOCAL)
       ▼
-[sml_planning_node]
-      │ /sml/get_plan (sml_msgs/srv/GetPlan)
-      ▼
-[sml_manager_node]
+[robocup_planner]   ← sml_planning_node + sml_manager_node 를 대체하는 단일 노드
       ├─── Action navigate_to_station ──▶ [robocup_navigator]
-      │                                          │ Nav2 FollowWaypoints
-      │                                          ▼
+      │    (station_id < 0 → sub_goal,         │ Nav2 FollowWaypoints
+      │     station_id > 0 → docking goal)      ▼
       │                                    [amr (Nav2)]
-      │                                          │ /robocup_navigator/post_process
-      │                                          ▼
-      │                                    [sml_manager_node (복귀)]
+      │                                         │ /robocup_navigator/post_process
+      │                                         ▼
+      │                                   [robocup_planner (복귀)]
       │
       ├─── Service /amr_robot_command ──▶ [amr_robot_node]
-      │    (sml_msgs/srv/ArmCommand)             ├─ /cargo         → [cargo_manager_node]
-      │                                          ├─ /get_target_pose → [vision_node]
-      │                                          ├─ /gripper/grip  → [gripper_node]
-      │                                          └─ /gripper/open  → [gripper_node]
+      │    (sml_msgs/srv/ArmCommand)            ├─ /cargo         → [cargo_manager_node]
+      │                                         ├─ /get_target_pose → [vision_node]
+      │                                         ├─ /gripper/grip  → [gripper_node]
+      │                                         └─ /gripper/open  → [gripper_node]
       │
       └─── Action wb_task ──▶ [실제 워크벤치 하드웨어]
            (sml_msgs/WbTask)
 ```
 
+### 두 단계 내비게이션 (sub_goal / goal)
+
+모든 station 접근은 두 단계로 분리됩니다:
+
+```
+navigate_subgoal(id)          wait_for_intransit_assembly()   navigate_goal(id)
+─── 고속 주행 ───────────────▶  ── 팔 완료 대기 ──────────────▶  ── 저속 정밀 도킹 ──
+  (팔: ASSEMBLE 비동기 가능)        (cargo 7/8 완료 확인)           (팔: 유휴 상태)
+```
+
+- `navigate_to_station` 액션에 **음수 station_id** 전달 시 서브골(접근 웨이포인트) 정지
+- **양수** 전달 시 docking goal(최종 주차 위치)로 이동
+
 ### 주요 인터페이스
 
 | 인터페이스 | 타입 | 설명 |
 |---|---|---|
-| `/sml/task` | `sml_msgs/msg/Task` | 주문 수신 |
-| `navigate_to_station` | `sml_msgs/action/NavTask` | AMR 이동 |
+| `/sml/task` | `sml_msgs/msg/Task` | 주문 수신 (TRANSIENT_LOCAL) |
+| `navigate_to_station` | `sml_msgs/action/NavTask` | AMR 이동 (음수=sub_goal) |
 | `/amr_robot_command` | `sml_msgs/srv/ArmCommand` | 로봇팔 제어 |
 | `wb_task` | `sml_msgs/action/WbTask` | 워크벤치 조립/분해 |
+| `/workbench/product_ready` | `std_msgs/Int32` | 워크벤치 완료 신호 |
 | `/robocup_navigator/post_process` | `std_srvs/srv/Trigger` | 이탈 동작 트리거 |
 | `/cargo` | `arm_interfaces/srv/Cargo` | 슬롯 상태 관리 (내부) |
 
@@ -73,8 +86,9 @@ src/
 
 | 슬롯 | 용도 |
 |---|---|
-| 슬롯 1 | 완성품 / 분해 대상 |
-| 슬롯 2~6 | 재료 (최대 5개) |
+| 슬롯 1 | 워크벤치 완성품 |
+| 슬롯 2~6 | 재료 (최대 5종) |
+| 슬롯 7~8 | 주행 중 조립(in-transit) 전용 |
 
 ---
 
@@ -90,36 +104,60 @@ source install/setup.bash
 특정 패키지만 재빌드:
 
 ```bash
-colcon build --packages-select sml_system_pkg robocup_navigator
+colcon build --packages-select robocup_planner sml_system_pkg
 source install/setup.bash
 ```
 
 ---
 
-## 실행 (Terminator 권장)
+## 실행
 
-### Terminator 바로 실행
+### 시뮬레이션 (mock 노드 — 하드웨어 없이 전체 구동 확인)
+
+```bash
+ros2 launch robocup_planner robocup_planner_sim.launch.py
+```
+
+side, tier, stage를 인자로 지정할 수 있습니다:
+
+```bash
+ros2 launch robocup_planner robocup_planner_sim.launch.py side:=b tier:=beginner stage:=lifecycle
+```
+
+시뮬레이션 스택은 다음 5개 노드를 한번에 기동합니다:
+
+| 노드 | 역할 |
+|---|---|
+| `order_server` | `/sml/task` 발행 (preset 자동 발행) |
+| `mock_nav_node` | `navigate_to_station` 액션 mock |
+| `mock_arm_node` | `/amr_robot_command` 서비스 mock |
+| `mock_wb_node` | `wb_task` 액션 mock |
+| `robocup_planner` | 계획 + 실행 통합 노드 |
+
+### 실전 (Terminator 권장)
+
+#### Terminator 바로 실행
 
 ```bash
 cd ~/ros2_ws
 bash tools/terminator/open_robocup_terminator.sh
 ```
 
-### Terminator 시스템 설치 후 실행
+#### Terminator 시스템 설치 후 실행
 
 ```bash
 bash tools/terminator/install_terminator_config.sh
 terminator -u -l robocup
 ```
 
-### 창 구성 (7-pane)
+#### 창 구성 (6-pane)
 
 ```
 ┌─────────────────┬────────────────┬────────────────────────────────┐
 │  1 all_in_one   │  2 navigator   │       3 robot_launch           │
-├─────────────────┴┬───────────────┴┬──────────────────┬────────────┤
-│   4 planning     │   5 manager    │  6 order_server  │  7 debug   │
-└──────────────────┴────────────────┴──────────────────┴────────────┘
+├─────────────────┴────────────────┴┬─────────────────┬────────────┤
+│         4 robocup_planner         │  5 order_server │  6 debug   │
+└───────────────────────────────────┴─────────────────┴────────────┘
 ```
 
 | 창 | 명령어 |
@@ -127,15 +165,14 @@ terminator -u -l robocup
 | 1 all_in_one | `ros2 launch all_in_one_package all_in_one_launch.py` |
 | 2 navigator | `ros2 run robocup_navigator robocup_navigator --ros-args -p side_mode:=A` |
 | 3 robot_launch | `ros2 launch amr_robot_launch amr_robot.launch.py vision_visualize:=true` |
-| 4 planning | `ros2 run sml_system_pkg sml_planning_node --ros-args -p side:=a` |
-| 5 manager | `ros2 run sml_system_pkg sml_manager_node --ros-args -p side:=a` |
-| 6 order_server | `ros2 run sml_system_pkg order_server` |
-| 7 debug | `ros2 topic list` |
+| 4 robocup_planner | `ros2 run robocup_planner planner_node --ros-args --params-file ~/ros2_ws/install/robocup_planner/share/robocup_planner/config/params.yaml` |
+| 5 order_server | `ros2 run sml_system_pkg order_server --ros-args -p auto_publish:=true -p start_side:=a -p tier:=beginner -p stage:=production` |
+| 6 debug | `ros2 topic list` |
 
-### 권장 실행 순서
+#### 권장 실행 순서
 
 ```
-1 → 3 → 4 → 5 → 6 → 2
+1 → 3 → 4 → 5 → 2
 ```
 
 > **주의**: 창 1(`all_in_one`)이 Nav2 초기화를 완료한 후 창 2(`navigator`)를 실행해야 합니다.
@@ -166,19 +203,16 @@ ros2 run robocup_navigator robocup_navigator --ros-args -p side_mode:=A
 ros2 launch amr_robot_launch amr_robot.launch.py vision_visualize:=true
 ```
 
-**터미널 4 — 계획 노드**
+**터미널 4 — 계획 + 실행 노드 (robocup_planner)**
 ```bash
-ros2 run sml_system_pkg sml_planning_node --ros-args -p side:=a
+ros2 run robocup_planner planner_node \
+  --ros-args --params-file ~/ros2_ws/install/robocup_planner/share/robocup_planner/config/params.yaml
 ```
 
-**터미널 5 — 관리 노드**
+**터미널 5 — 주문 서버**
 ```bash
-ros2 run sml_system_pkg sml_manager_node --ros-args -p side:=a
-```
-
-**터미널 6 — 주문 서버**
-```bash
-ros2 run sml_system_pkg order_server
+ros2 run sml_system_pkg order_server \
+  --ros-args -p auto_publish:=true -p start_side:=a -p tier:=beginner -p stage:=production
 ```
 
 ---
@@ -204,9 +238,13 @@ ros2 run sml_system_pkg order_server
 B 경기장 전환 시 `side:=b`로 변경:
 
 ```bash
+# 시뮬레이션
+ros2 launch robocup_planner robocup_planner_sim.launch.py side:=b
+
+# 실전
 ros2 run robocup_navigator robocup_navigator --ros-args -p side_mode:=B
-ros2 run sml_system_pkg sml_planning_node --ros-args -p side:=b
-ros2 run sml_system_pkg sml_manager_node --ros-args -p side:=b
+ros2 run sml_system_pkg order_server \
+  --ros-args -p auto_publish:=true -p start_side:=b -p tier:=beginner -p stage:=production
 ```
 
 ---
@@ -349,7 +387,8 @@ terminator -u -l robocup
 
 ## 관련 문서
 
-- [경기별 적재·하역 로직](src/sml_system_pkg/docs/경기별_적재_하역_로직.md)
+- [robocup_planner 패키지](src/robocup_planner/README.md)
+- [sml_system_pkg (mock/order 노드)](src/sml_system_pkg/README.md)
 - [sml_msgs 인터페이스](src/sml_msgs/README.md)
 - [Waypoint Editor 사용법](src/robocup_navigator/WAYPOINT_EDITOR.md)
 - [시리얼 통신 프로토콜](comm.md)

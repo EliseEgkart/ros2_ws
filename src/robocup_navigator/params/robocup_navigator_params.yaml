@@ -1,0 +1,96 @@
+robocup_navigator:
+  ros__parameters:
+    # ------------------------------------------------------------------
+    # Base selection
+    # ------------------------------------------------------------------
+    # A: station ids 0-8. B: station ids 9-17.
+    side_mode: "A"
+
+    # ------------------------------------------------------------------
+    # Nav2 waypoint execution
+    # ------------------------------------------------------------------
+    # FollowWaypoints drives each sub_goal / goal waypoint.
+    follow_waypoints_action_name: "follow_waypoints"
+    follow_waypoints_server_timeout_sec: 10.0
+    nav_result_timeout_sec: 120.0
+
+    # ------------------------------------------------------------------
+    # Topics
+    # ------------------------------------------------------------------
+    # cmd_vel is used only for front-distance alignment and stop commands.
+    # BackUp / Spin departure motions are sent through Nav2 actions.
+    cmd_vel_topic: "cmd_vel"
+    scan_topic: "/scan"
+
+    # ------------------------------------------------------------------
+    # Front lidar sampling
+    # ------------------------------------------------------------------
+    # The front direction is sampled from both edges of LaserScan.ranges.
+    # Increase front_edge_sample_count to make the median more stable.
+    # Increase front_edge_skip_count if the exact edge beams are noisy.
+    front_edge_sample_count: 5
+    front_edge_skip_count: 0
+    scan_stale_timeout_sec: 0.5
+    front_min_valid_range: 0.005
+    front_max_valid_range: 5.0
+
+    # Enable while tuning target distance. Disable for quieter logs.
+    scan_debug: true
+    scan_debug_period_sec: 1.0
+
+    # ------------------------------------------------------------------
+    # Final front-distance alignment after docking goal
+    # ------------------------------------------------------------------
+    # If front_distance > target, the robot moves forward.
+    # If front_distance < target, the robot moves backward.
+    approach_after_goal: true
+
+    # Main tuning value: desired distance from the front structure.
+    target_front_distance: 0.47
+
+    # Stop when abs(front_distance - target_front_distance) is within this.
+    target_distance_tolerance: 0.01
+
+    # Linear.x speed limits used during alignment.
+    approach_speed: 0.08
+    approach_min_speed: 0.05
+
+    # Inside this error distance, speed is scaled down toward min speed.
+    approach_slowdown_distance: 0.15
+    approach_timeout_sec: 12.0
+
+    # false: timeout is treated as non-fatal and navigation continues.
+    # true: timeout aborts the station navigation.
+    fail_on_alignment_timeout: false
+
+    # ------------------------------------------------------------------
+    # Departure backup after station work
+    # ------------------------------------------------------------------
+    # Triggered by /robocup_navigator/post_process after arm work is done.
+    backup_after_goal: true
+
+    # Main tuning values for leaving the station.
+    backup_distance: 0.20
+    backup_speed: 0.14
+
+    backup_timeout_sec: 5.0
+    backup_action_name: "backup"
+
+    # ------------------------------------------------------------------
+    # Departure rotation after backup
+    # ------------------------------------------------------------------
+    # Rotation direction and angle are NOT set here.
+    # They are loaded per goal waypoint from robocup_rotation_profiles.yaml.
+    rotate_after_backup: true
+    spin_action_name: "spin"
+
+    # Navigator-side validity guard only. Nav2 Spin speed is limited by:
+    # src/amr/params/nav2_params*.yaml
+    #   recoveries_server.max_rotational_vel
+    #   recoveries_server.min_rotational_vel
+    #   recoveries_server.rotational_acc_lim
+    rotate_angular_speed: 1.4
+    rotate_timeout_sec: 8.0
+
+    # Loop sleep period for waiting/polling during navigator actions.
+    motion_period_sec: 0.05

@@ -68,12 +68,6 @@ class RobocupNavigator(Node):
             default_yaml_path = share_params_dir / 'robocup_waypoint.yaml'
         default_yaml = str(default_yaml_path)
 
-        # Deprecated: kept only so existing launch files with these
-        # parameters keep working. Rotation now comes from per-waypoint
-        # robocup_rotation_profiles.yaml.
-        default_motion_profiles_yaml = str(
-            share_params_dir / 'nav_motion_profiles.yaml'
-        )
         default_rotation_profiles_path = (
             source_params_dir / 'robocup_rotation_profiles.yaml'
         )
@@ -92,10 +86,6 @@ class RobocupNavigator(Node):
         )
 
         self.declare_parameter('side_mode', 'A')
-        self.declare_parameter(
-            'motion_profiles_file',
-            default_motion_profiles_yaml,
-        )
         self.declare_parameter(
             'rotation_profiles_file',
             default_rotation_profiles_yaml,
@@ -135,13 +125,6 @@ class RobocupNavigator(Node):
 
         self.declare_parameter('rotate_after_backup', True)
         self.declare_parameter('spin_action_name', 'spin')
-
-        # Deprecated: direction/angle are ignored for runtime decisions.
-        # Keep declarations for launch compatibility; only angular speed and
-        # timeout still apply to per-waypoint rotations.
-        self.declare_parameter('rotate_direction', 'left')
-
-        self.declare_parameter('rotate_angle_deg', 150.0)
         self.declare_parameter('rotate_angular_speed', 1.4)
         self.declare_parameter('rotate_timeout_sec', 8.0)
         self.declare_parameter('motion_period_sec', 0.05)
@@ -286,16 +269,6 @@ class RobocupNavigator(Node):
             self.get_parameter('rotate_after_backup').value
         )
 
-        # Deprecated fallback parameters. Runtime direction/angle are now
-        # loaded per goal waypoint from robocup_rotation_profiles.yaml.
-        self._rotate_direction = str(
-            self.get_parameter('rotate_direction').value
-        ).lower()
-
-        self._rotate_angle_deg = float(
-            self.get_parameter('rotate_angle_deg').value
-        )
-        self._rotate_angle_rad = math.radians(self._rotate_angle_deg)
         self._rotate_angular_speed = float(
             self.get_parameter('rotate_angular_speed').value
         )

@@ -17,6 +17,7 @@ executor thread and use threading.Event to wait for ROS2 async results.
 """
 
 import threading
+from collections import Counter
 from typing import Optional
 
 import rclpy
@@ -232,6 +233,17 @@ class PlannerNode(Node):
             f"aidlist={dict(aidlist)}, net_aidlist={dict(net_aidlist)}"
         )
 
+        # Simulate Phase 1 recycle disassembly to detect cargo overflow at plan time.
+        # Materials that would overflow and are still needed get added back to
+        # net_aidlist so they are fetched from storage instead of lost silently.
+        if recycle_ids:
+            overflow_needed = self._check_recycle_overflow(recycle_ids, net_aidlist)
+            if overflow_needed:
+                net_aidlist += overflow_needed
+                self.get_logger().info(
+                    f"net_aidlist after recycle overflow correction: {dict(net_aidlist)}"
+                )
+
         # Step A: build storage midlist and check if it alone satisfies net_aidlist
         if self._calc:
             storage_mid = build_storage_midlist(storage_stations, self._calc, home_id)
@@ -366,6 +378,45 @@ class PlannerNode(Node):
             f"workbench={workbench_ids}, in-transit={intransit_ids}"
         )
         return plan
+
+    def _check_recycle_overflow(
+        self, recycle_ids: list, net_aidlist: Counter
+    ) -> Counter:
+        """Simulate Phase 1 cargo loading for all recycled products.
+
+        Returns a Counter of materials that would overflow cargo slots 2-6
+        AND are still needed (i.e., present in net_aidlist).  Callers should
+        add the returned Counter to net_aidlist so those materials are picked
+        from storage in Phase 2 instead of being silently lost.
+        """
+        from robocup_planner.execution.cargo_state import CargoManager
+        from robocup_planner.product_catalog import get_material_count
+
+        sim = CargoManager()
+        overflow: Counter = Counter()
+        for pid in recycle_ids:
+            for mat_id, cnt in get_material_count(pid).items():
+                for _ in range(cnt):
+                    if sim.place_material(mat_id) is None:
+                        overflow[mat_id] += 1
+
+        if not overflow:
+            return Counter()
+
+        overflow_needed: Counter = Counter()
+        for mat_id, cnt in overflow.items():
+            recoverable = min(cnt, net_aidlist.get(mat_id, 0))
+            if recoverable > 0:
+                overflow_needed[mat_id] = recoverable
+
+        total_overflow = sum(overflow.values())
+        total_needed = sum(overflow_needed.values())
+        self.get_logger().warning(
+            f"[PLAN] Recycle cargo overflow detected: {total_overflow} block(s) "
+            f"would overflow {dict(overflow)}; {total_needed} needed — "
+            "routing overflowed needed materials to storage pickup"
+        )
+        return overflow_needed
 
     # ------------------------------------------------------------------
     # Blocking helpers called by Executor (run in executor thread)

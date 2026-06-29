@@ -90,8 +90,8 @@ class CargoManager:
         Return [(cargo_id, material_id)] covering all blocks required by product_id,
         or None if the materials are not all present.
         """
-        from robocup_planner.product_catalog import get_build_order
-        needed = list(get_build_order(product_id))
+        from robocup_planner.product_catalog import get_material_count
+        needed = list(get_material_count(product_id).elements())
 
         available: Dict[int, List[int]] = {
             cid: list(slot.contents) for cid, slot in self._slots.items()

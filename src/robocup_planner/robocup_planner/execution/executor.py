@@ -147,7 +147,7 @@ class Executor:
                     if placement is None:
                         self._log(
                             f"  ! cargo full during recycle unload of mat {mat_id}; "
-                            "surplus ignored"
+                            "block lost (planner should have routed this to storage pickup)"
                         )
 
     # ------------------------------------------------------------------

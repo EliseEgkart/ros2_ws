@@ -16,7 +16,6 @@ setup(
     entry_points={
         'console_scripts': [
             'line_manager = line_manager.line_manager:main',
-            'line_manager_test = line_manager.line_manager_test:main',
         ],
     },
 )

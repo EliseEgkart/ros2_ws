@@ -115,35 +115,30 @@ class Executor:
         if not recycle_entries:
             return
 
-        self._log(f"Phase 1: collecting {len(recycle_entries)} recycled product(s)")
+        self._log(f"Phase 1: recycling {len(recycle_entries)} product(s)")
 
-        # Collect all products from each customer counter in one visit.
-        entries_by_station = {}
+        # Cargo slot 1 can carry only one assembled product. Each recycled
+        # product must be picked and disassembled before the next pickup.
+        workbench_id = self._plan.workbench_station_id
         for entry in recycle_entries:
-            entries_by_station.setdefault(entry['station_id'], []).append(entry)
+            station_id = entry['station_id']
+            pid = entry['recycle_product_id']
 
-        for station_id, entries in entries_by_station.items():
-            product_ids = [e['recycle_product_id'] for e in entries]
             self._log(f"  → navigate to customer station {station_id} (sub_goal)")
             self._node.navigate_subgoal(station_id)
             self._wait_for_intransit_assembly()
             self._node.navigate_goal(station_id)
-            self._log(f"  → pick product(s) {product_ids}")
-            self._node.arm_pick_products(
+            self._log(f"  → pick product {pid}")
+            self._node.arm_pick_product(
                 station_id=station_id,
-                product_ids=product_ids,
+                product_id=pid,
             )
             self._node.call_post_process()
 
-        # Bring all collected products to the workbench for disassembly.
-        sid = self._plan.workbench_station_id
-        self._log(f"  → navigate to workbench {sid} (sub_goal)")
-        self._node.navigate_subgoal(sid)
-        self._wait_for_intransit_assembly()
-        self._node.navigate_goal(sid)
-
-        for entry in recycle_entries:
-            pid = entry['recycle_product_id']
+            self._log(f"  → navigate to workbench {workbench_id} (sub_goal)")
+            self._node.navigate_subgoal(workbench_id)
+            self._wait_for_intransit_assembly()
+            self._node.navigate_goal(workbench_id)
             self._log(f"  → workbench disassembly of product {pid}")
             self._node.wb_task('RECYCLE', pid)
             # After disassembly the arm places reclaimed materials onto cargo 2-6.
@@ -157,7 +152,7 @@ class Executor:
                             f"  ! cargo full during recycle unload of mat {mat_id}; "
                             "block lost (planner should have routed this to storage pickup)"
                         )
-        self._node.call_post_process()
+            self._node.call_post_process()
 
     # ------------------------------------------------------------------
     # Phase 2 — Main pickup loop

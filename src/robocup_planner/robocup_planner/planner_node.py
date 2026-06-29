@@ -696,13 +696,9 @@ class PlannerNode(Node):
 
     def arm_pick_product(self, station_id: int, product_id: int) -> bool:
         """Pick an assembled product from a customer counter (for recycling)."""
-        return self.arm_pick_products(station_id, [product_id])
-
-    def arm_pick_products(self, station_id: int, product_ids) -> bool:
-        """Pick assembled product(s) from a customer counter (for recycling)."""
         return self._arm_call(
             ARM_PICK,
-            object_ids=[int(pid) for pid in product_ids],
+            object_ids=[product_id],
             location=station_id,
             station_id=station_id,
         )

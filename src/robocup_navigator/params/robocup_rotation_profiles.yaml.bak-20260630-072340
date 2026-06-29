@@ -1,25 +1,25 @@
 rotation_profiles:
-  station_9_goal:
+  station_0_goal:
     direction: counterclockwise
     angle_deg: 10.288
-  station_10_goal:
+  station_1_goal:
     direction: counterclockwise
     angle_deg: 164.105
-  station_11_goal:
+  station_2_goal:
     direction: clockwise
     angle_deg: 179.265
-  station_12_goal:
+  station_3_goal:
     direction: counterclockwise
     angle_deg: 143.281
-  station_13_goal:
-    direction: counterclockwise
-    angle_deg: 81.4
-  station_14_goal:
+  station_5_goal:
     direction: clockwise
     angle_deg: 88.959
-  station_15_goal:
+  station_6_goal:
     direction: counterclockwise
     angle_deg: 172.756
-  station_17_goal:
+  station_8_goal:
     direction: counterclockwise
     angle_deg: 127.447
+  station_4_goal:
+    direction: counterclockwise
+    angle_deg: 81.4

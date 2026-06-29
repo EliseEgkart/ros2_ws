@@ -20,23 +20,53 @@ class VisionNode(Node):
         self.declare_parameter('comp_model_path', COMP_MODEL_PATH)
         self.declare_parameter('visualize', False)
         self.declare_parameter('visualize_window', '6D Pose (Ensemble Mode)')
+        self.declare_parameter('visualize_scale', 1.0)
+        self.declare_parameter('live_view', False)
+        self.declare_parameter('live_target_id', 0)
+        self.declare_parameter('live_view_period_sec', 0.15)
 
         self.vision = None
         self.init_error = None
+        self.live_view_timer = None
         try:
             self.vision = Vision6DPoseManager(
                 logger=self.get_logger(),
                 det_model_path=self.get_parameter('det_model_path').value,
                 seg_model_path=self.get_parameter('seg_model_path').value,
                 comp_model_path=self.get_parameter('comp_model_path').value,
-                visualize=bool(self.get_parameter('visualize').value),
+                visualize=(
+                    bool(self.get_parameter('visualize').value) or
+                    bool(self.get_parameter('live_view').value)
+                ),
                 visualize_window=self.get_parameter('visualize_window').value,
+                visualize_scale=float(self.get_parameter('visualize_scale').value),
             )
             self.get_logger().info('[VISION] vision_node started (6D ensemble based)')
+            if bool(self.get_parameter('live_view').value):
+                period_sec = max(
+                    0.03,
+                    float(self.get_parameter('live_view_period_sec').value),
+                )
+                self.live_view_timer = self.create_timer(period_sec, self.live_view_cb)
+                self.get_logger().info(
+                    f'[VISION] live view enabled '
+                    f'(target_id={self.get_parameter("live_target_id").value}, '
+                    f'period={period_sec:.2f}s)'
+                )
         except Exception as e:
             self.init_error = str(e)
             self.get_logger().error(f'[VISION] 6D ensemble init failed: {e}')
 
+    def live_view_cb(self):
+        if self.vision is None:
+            return
+
+        try:
+            self.vision.show_live_frame(
+                target_id=int(self.get_parameter('live_target_id').value)
+            )
+        except Exception as e:
+            self.get_logger().warn(f'[VISION] live view frame skipped: {e}')
 
     def get_pose_cb(self, request, response):
         target_str = request.target_color.strip()

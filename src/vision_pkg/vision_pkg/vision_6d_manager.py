@@ -77,6 +77,7 @@ class Vision6DPoseManager:
         match_distance_px=40.0,
         visualize=False,
         visualize_window="6D Pose (Ensemble Mode)",
+        visualize_scale=1.0,
     ):
         self.logger = logger
         self.det_model_path = det_model_path
@@ -87,6 +88,7 @@ class Vision6DPoseManager:
         self.match_distance_px = float(match_distance_px)
         self.visualize = bool(visualize)
         self.visualize_window = str(visualize_window)
+        self.visualize_scale = max(0.1, float(visualize_scale))
 
         self._check_model_file(self.det_model_path)
         self._check_model_file(self.seg_model_path)
@@ -113,7 +115,8 @@ class Vision6DPoseManager:
             f"comp={self.comp_model_path}, "
             f"det_task={self.model_det.task}, seg_task={self.model_seg.task}, "
             f"comp_task={self.model_comp.task}, "
-            f"visualize={self.visualize}"
+            f"visualize={self.visualize}, "
+            f"visualize_scale={self.visualize_scale}"
         )
 
     def shutdown(self):
@@ -180,6 +183,32 @@ class Vision6DPoseManager:
                     xyxy = box.xyxy[0].cpu().numpy()
                     u = int((xyxy[0] + xyxy[2]) / 2)
                     v = int((xyxy[1] + xyxy[3]) / 2)
+
+                    is_target = self._target_matches(target_key, cls_key)
+
+                    # ------------------------------------------------------------
+                    # [NEW] 화면 테두리에 걸친 객체 제거
+                    # ------------------------------------------------------------
+                    if self.is_border_cut_object(
+                        xyxy=xyxy,
+                        image_shape=image.shape,
+                        seg_result=seg_result,
+                        target_u=u,
+                        target_v=v,
+                        match_distance_px=self.match_distance_px,
+                        margin_px=12,
+                    ):
+                        detections_for_vis.append(
+                            {
+                                "u": u,
+                                "v": v,
+                                "z": 0.0,
+                                "yaw": 0.0,
+                                "class_name": f"{cls_name}_edge_cut",
+                                "is_target": False,
+                            }
+                        )
+                        continue
 
                     z = self.get_valid_depth(depth_frame, u, v)
                     yaw = 0.0
@@ -299,6 +328,98 @@ class Vision6DPoseManager:
         )
         return result
 
+    def show_live_frame(self, target_id=0):
+        """Show one annotated RealSense frame without waiting for a service call."""
+        try:
+            target_id = int(target_id)
+        except Exception:
+            target_id = 0
+
+        target_class = ID_TO_CLASS.get(target_id)
+        target_key = self._normalize_class_name(target_class) if target_class else None
+        model_det, model_seg, pipeline_name = self._select_models(target_id)
+
+        frames = self.pipeline.wait_for_frames(timeout_ms=500)
+        aligned = self.align.process(frames)
+        depth_frame = aligned.get_depth_frame()
+        color_frame = aligned.get_color_frame()
+        if not color_frame or not depth_frame:
+            return False
+
+        image = np.asanyarray(color_frame.get_data())
+        det_result = model_det(image, verbose=False)[0]
+        seg_result = model_seg(image, verbose=False)[0]
+
+        detections_for_vis = []
+        best = None
+        best_z = float("inf")
+
+        if det_result.boxes is not None:
+            for box in det_result.boxes:
+                cls_name = det_result.names[int(box.cls[0])]
+                cls_key = self._normalize_class_name(cls_name)
+
+                xyxy = box.xyxy[0].cpu().numpy()
+                u = int((xyxy[0] + xyxy[2]) / 2)
+                v = int((xyxy[1] + xyxy[3]) / 2)
+
+                is_target = True
+                if target_key is not None:
+                    is_target = self._target_matches(target_key, cls_key)
+
+                if self.is_border_cut_object(
+                    xyxy=xyxy,
+                    image_shape=image.shape,
+                    seg_result=seg_result,
+                    target_u=u,
+                    target_v=v,
+                    match_distance_px=self.match_distance_px,
+                    margin_px=12,
+                ):
+                    detections_for_vis.append(
+                        {
+                            "u": u,
+                            "v": v,
+                            "z": 0.0,
+                            "yaw": 0.0,
+                            "class_name": f"{cls_name}_edge_cut",
+                            "is_target": False,
+                        }
+                    )
+                    continue
+
+                z = self.get_valid_depth(depth_frame, u, v)
+                yaw = self.find_yaw_from_segmentation(seg_result, u, v) if z > 0.0 else 0.0
+                detections_for_vis.append(
+                    {
+                        "u": u,
+                        "v": v,
+                        "z": z,
+                        "yaw": yaw,
+                        "class_name": str(cls_name),
+                        "is_target": is_target,
+                    }
+                )
+
+                if is_target and 0.0 < z < best_z:
+                    best_z = z
+                    best = {
+                        "u": u,
+                        "v": v,
+                        "z": z,
+                        "yaw": yaw,
+                        "detected_class": str(cls_name),
+                    }
+
+        label = target_class if target_class else f"all ({pipeline_name})"
+        self.show_visualization(
+            det_result=det_result,
+            detections=detections_for_vis,
+            target_class=label,
+            best=best,
+        )
+        return True
+
     def _select_models(self, target_id):
         if target_id in COMPONENT_IDS:
             return self.model_comp, self.model_comp, "component"
@@ -308,7 +429,8 @@ class Vision6DPoseManager:
 
     def show_visualization(self, det_result, detections, target_class, best=None):
         image = det_result.plot()
-        cv2.circle(image, (320, 240), 5, (0, 0, 255), -1)
+        height, width = image.shape[:2]
+        cv2.circle(image, (width // 2, height // 2), 5, (0, 0, 255), -1)
         cv2.putText(
             image,
             f"target: {target_class}",
@@ -345,12 +467,21 @@ class Vision6DPoseManager:
             cv2.putText(
                 image,
                 label,
-                (max(0, u - 90), min(470, v + 24)),
+                (max(0, u - 90), min(height - 10, v + 24)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
                 color,
                 1,
                 cv2.LINE_AA,
+            )
+
+        if self.visualize_scale != 1.0:
+            image = cv2.resize(
+                image,
+                None,
+                fx=self.visualize_scale,
+                fy=self.visualize_scale,
+                interpolation=cv2.INTER_LINEAR,
             )
 
         cv2.imshow(self.visualize_window, image)
@@ -397,6 +528,95 @@ class Vision6DPoseManager:
         if yaw < -90.0:
             yaw += 180.0
         return float(yaw)
+
+    @staticmethod
+    def is_border_cut_object(
+        xyxy,
+        image_shape,
+        seg_result=None,
+        target_u=None,
+        target_v=None,
+        match_distance_px=40.0,
+        margin_px=12,
+    ):
+        """
+        화면 테두리에 걸쳐 잘린 객체인지 판단.
+
+        판단 기준:
+        1. YOLO detection bbox가 이미지 테두리에 margin_px 이내로 닿으면 True
+        2. segmentation mask polygon이 이미지 테두리에 margin_px 이내로 닿으면 True
+
+        Args:
+            xyxy: YOLO bbox 좌표 [x1, y1, x2, y2]
+            image_shape: image.shape, 보통 (H, W, C)
+            seg_result: YOLO segmentation 결과. 없으면 bbox 기준만 사용
+            target_u, target_v: detection bbox 중심 픽셀
+            match_distance_px: detection bbox와 segmentation bbox 매칭 거리
+            margin_px: 테두리로 판단할 픽셀 여유값
+
+        Returns:
+            True  -> 화면 테두리에 걸친 잘린 객체, 비활성화 권장
+            False -> 정상 객체
+        """
+        h, w = image_shape[:2]
+
+        x1, y1, x2, y2 = map(float, xyxy)
+
+        # ------------------------------------------------------------
+        # 1) Detection bbox가 화면 테두리에 닿는지 확인
+        # ------------------------------------------------------------
+        bbox_touches_border = (
+            x1 <= margin_px or
+            y1 <= margin_px or
+            x2 >= (w - 1 - margin_px) or
+            y2 >= (h - 1 - margin_px)
+        )
+
+        if bbox_touches_border:
+            return True
+
+        # ------------------------------------------------------------
+        # 2) Segmentation mask가 있으면 mask polygon도 확인
+        #    bbox는 안 닿았는데 mask만 경계에 걸치는 경우 방어
+        # ------------------------------------------------------------
+        if seg_result is None:
+            return False
+
+        if seg_result.masks is None or seg_result.boxes is None:
+            return False
+
+        if target_u is None or target_v is None:
+            return False
+
+        min_dist = float("inf")
+        best_mask_pts = None
+
+        for idx, seg_box in enumerate(seg_result.boxes):
+            seg_xyxy = seg_box.xyxy[0].cpu().numpy()
+            seg_u = int((seg_xyxy[0] + seg_xyxy[2]) / 2)
+            seg_v = int((seg_xyxy[1] + seg_xyxy[3]) / 2)
+
+            dist = ((target_u - seg_u) ** 2 + (target_v - seg_v) ** 2) ** 0.5
+
+            if dist < match_distance_px and dist < min_dist:
+                min_dist = dist
+                if len(seg_result.masks.xy) > idx:
+                    best_mask_pts = np.asarray(seg_result.masks.xy[idx], dtype=np.float32)
+
+        if best_mask_pts is None or len(best_mask_pts) < 3:
+            return False
+
+        xs = best_mask_pts[:, 0]
+        ys = best_mask_pts[:, 1]
+
+        mask_touches_border = (
+            np.any(xs <= margin_px) or
+            np.any(ys <= margin_px) or
+            np.any(xs >= (w - 1 - margin_px)) or
+            np.any(ys >= (h - 1 - margin_px))
+        )
+
+        return bool(mask_touches_border)
 
     @staticmethod
     def get_valid_depth(depth_frame, u, v, search_radius=10):

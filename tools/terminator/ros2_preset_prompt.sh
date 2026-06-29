@@ -51,8 +51,8 @@ fi
 read -e -i "$CMD" -p "$ " USER_CMD
 
 if [ -n "$USER_CMD" ]; then
-  if [ -n "$PANE_ID" ]; then
-    LOG_DIR="${ROBOCUP_RUN_LOG_DIR:-$WORKSPACE/logs/$(date +%Y%m%d_%H%M)}"
+  if [ -n "$PANE_ID" ] && [ -n "${ROBOCUP_RUN_LOG_DIR:-}" ]; then
+    LOG_DIR="$ROBOCUP_RUN_LOG_DIR"
     mkdir -p "$LOG_DIR"
     LOG_FILE="$LOG_DIR/$PANE_ID.log"
 

@@ -20,6 +20,7 @@ for pane_id in {1..8}; do
 done
 
 export ROBOCUP_RUN_LOG_DIR="$RUN_LOG_DIR"
+export ROBOCUP_ENABLE_LOGS=1
 sed "s#__ROS2_WS__#$WORKSPACE_DIR#g" "$CONFIG_FILE" > "$GENERATED_CONFIG"
 echo "[OK] log directory: $RUN_LOG_DIR"
 exec terminator -u -g "$GENERATED_CONFIG" -l robocup_8pane "$@"

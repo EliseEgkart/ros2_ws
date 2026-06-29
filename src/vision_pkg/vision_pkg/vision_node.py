@@ -20,7 +20,27 @@ class VisionNode(Node):
         self.declare_parameter('comp_model_path', COMP_MODEL_PATH)
         self.declare_parameter('visualize', False)
         self.declare_parameter('visualize_window', '6D Pose (Ensemble Mode)')
-        self.declare_parameter('visualize_scale', 1.0)
+        self.declare_parameter('visualize_scale', 2.0)
+
+        # Depth/RANSAC volume filter parameters
+        self.declare_parameter('use_depth_volume_filter', True)
+        self.declare_parameter('visualize_depth_mask', True)
+        self.declare_parameter('depth_min_height_m', 0.01)
+        self.declare_parameter('depth_max_height_m', 0.120)
+        self.declare_parameter('depth_min_size_x_m', 0.02)
+        self.declare_parameter('depth_min_size_y_m', 0.02)
+        self.declare_parameter('depth_min_area_px', 80)
+        self.declare_parameter('depth_min_overlap_ratio', 0.06)
+        self.declare_parameter('depth_border_margin_px', 8)
+        self.declare_parameter('depth_max_border_contact_m', 0.02)
+        self.declare_parameter('use_depth_mask_as_yolo_input', False)
+
+        # YOLO segmentation shape-ratio filter parameters
+        self.declare_parameter('use_shape_ratio_filter', True)
+        self.declare_parameter('shape_ratio_2x2_max', 1.45)
+        self.declare_parameter('shape_ratio_4x2_min', 1.55)
+        self.declare_parameter('shape_ratio_min_mask_points', 8)
+
         self.declare_parameter('live_view', False)
         self.declare_parameter('live_target_id', 0)
         self.declare_parameter('live_view_period_sec', 0.15)
@@ -40,6 +60,53 @@ class VisionNode(Node):
                 ),
                 visualize_window=self.get_parameter('visualize_window').value,
                 visualize_scale=float(self.get_parameter('visualize_scale').value),
+
+                use_depth_volume_filter=bool(
+                    self.get_parameter('use_depth_volume_filter').value
+                ),
+                visualize_depth_mask=bool(
+                    self.get_parameter('visualize_depth_mask').value
+                ),
+                depth_min_height_m=float(
+                    self.get_parameter('depth_min_height_m').value
+                ),
+                depth_max_height_m=float(
+                    self.get_parameter('depth_max_height_m').value
+                ),
+                depth_min_size_x_m=float(
+                    self.get_parameter('depth_min_size_x_m').value
+                ),
+                depth_min_size_y_m=float(
+                    self.get_parameter('depth_min_size_y_m').value
+                ),
+                depth_min_area_px=int(
+                    self.get_parameter('depth_min_area_px').value
+                ),
+                depth_min_overlap_ratio=float(
+                    self.get_parameter('depth_min_overlap_ratio').value
+                ),
+                depth_border_margin_px=int(
+                    self.get_parameter('depth_border_margin_px').value
+                ),
+                depth_max_border_contact_m=float(
+                    self.get_parameter('depth_max_border_contact_m').value
+                ),
+                use_depth_mask_as_yolo_input=bool(
+                    self.get_parameter('use_depth_mask_as_yolo_input').value
+                ),
+
+                use_shape_ratio_filter=bool(
+                    self.get_parameter('use_shape_ratio_filter').value
+                ),
+                shape_ratio_2x2_max=float(
+                    self.get_parameter('shape_ratio_2x2_max').value
+                ),
+                shape_ratio_4x2_min=float(
+                    self.get_parameter('shape_ratio_4x2_min').value
+                ),
+                shape_ratio_min_mask_points=int(
+                    self.get_parameter('shape_ratio_min_mask_points').value
+                ),
             )
             self.get_logger().info('[VISION] vision_node started (6D ensemble based)')
             if bool(self.get_parameter('live_view').value):

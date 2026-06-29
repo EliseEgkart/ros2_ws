@@ -14,6 +14,7 @@
 """
 
 import random
+import re
 from collections import Counter
 from typing import Dict, Iterable, List, Sequence, Tuple
 
@@ -22,6 +23,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
 from sml_msgs.msg import Order, Station, Task
+
 
 TASK_QOS = QoSProfile(
     depth=1,
@@ -104,24 +106,26 @@ TIER_STAGE_CONFIG = {
 
 TIER_NAMES = {1: "entry", 2: "beginner", 3: "advanced", 4: "expert"}
 STAGE_NAMES = {1: "production", 2: "recycling", 3: "lifecycle"}
+PRODUCT_NAME_TO_ID = {
+    name.lower().replace("-", "").replace(" ", ""): product_id
+    for product_id, (name, _) in PRODUCT_DB.items()
+}
 
 
 # ─────────────────────────────────────────────────────────────
-# Station naming / ID mapping
-#   local station: 1~8
-#   A actual ID: 1~8
-#   B actual ID: 10~17
-#   start/goal: A=0, B=9
+# Station naming / real ID mapping
+#   A station: 1~8, start/goal: 0
+#   B station: 10~17, start/goal: 9
 # ─────────────────────────────────────────────────────────────
 STATION_DEFS = [
-    ("storage_1", 1, ST_STORAGE),
-    ("storage_2", 2, ST_STORAGE),
-    ("workbench_1", 3, ST_WORKBENCH),
-    ("storage_3", 4, ST_STORAGE),
-    ("storage_4", 5, ST_STORAGE),
-    ("workbench_2", 6, ST_WORKBENCH),
-    ("workbench_3", 7, ST_WORKBENCH),
-    ("customer_1", 8, ST_CUSTOMER),
+    ("storage_1", 1, 10, ST_STORAGE),
+    ("storage_2", 2, 11, ST_STORAGE),
+    ("workbench_1", 3, 12, ST_WORKBENCH),
+    ("storage_3", 4, 13, ST_STORAGE),
+    ("storage_4", 5, 14, ST_STORAGE),
+    ("workbench_2", 6, 15, ST_WORKBENCH),
+    ("workbench_3", 7, 16, ST_WORKBENCH),
+    ("customer_1", 8, 17, ST_CUSTOMER),
 ]
 
 STATION_COUNT = 8
@@ -138,10 +142,6 @@ def normalize_side(side: str) -> str:
 
 def side_prefix(side: str) -> str:
     return "side_a" if normalize_side(side) == "a" else "side_b"
-
-
-def station_offset(side: str) -> int:
-    return 0 if normalize_side(side) == "a" else 9
 
 
 def make_order(order_type: int, _name: str, product_id: int) -> Order:
@@ -165,20 +165,19 @@ def fill_task(orders: Sequence[Order], material_map: Dict[str, Sequence[int]], s
     """공식 builder 스타일의 material_map에서 선택한 side만 Task로 변환한다."""
     side = normalize_side(start_side)
     prefix = side_prefix(side)
-    offset = station_offset(side)
 
     task = Task()
     task.order_list = list(orders)
 
-    for suffix, local_id, station_type in STATION_DEFS:
+    for suffix, side_a_id, side_b_id, station_type in STATION_DEFS:
         name = f"{prefix}_{suffix}"
         materials = list(material_map.get(name, []))
-        actual_station_id = local_id + offset
+        station_id = side_a_id if side == "a" else side_b_id
         task.arena_layout.append(
             make_station(
                 station_name=name,
                 station_type=station_type,
-                station_id=actual_station_id,
+                station_id=station_id,
                 material_ids=materials,
             )
         )
@@ -319,10 +318,12 @@ class OrderServer(Node):
         self.declare_parameter("task_topic", "/sml/task")
         self.declare_parameter("auto_publish", False)
         self.declare_parameter("start_side", "")
-        self.declare_parameter("mode", "")  # preset | random | "" interactive
+        self.declare_parameter("mode", "")  # custom | preset | random | "" interactive
         self.declare_parameter("tier", "")
         self.declare_parameter("stage", "")
         self.declare_parameter("seed", -1)
+        self.declare_parameter("produce_product_ids", "")
+        self.declare_parameter("recycle_product_ids", "")
 
         self.task_topic = self.get_parameter("task_topic").value
         self.task_pub = self.create_publisher(Task, self.task_topic, TASK_QOS)
@@ -338,6 +339,8 @@ class OrderServer(Node):
         self.config = TIER_STAGE_CONFIG[(self.tier, self.stage)]
 
         self.mode = self._get_mode()
+        self.requested_produce_ids: List[int] = []
+        self.requested_recycle_ids: List[int] = []
         self.lifecycle_common_materials: List[int] = []
         self.produce_initial_materials: List[int] = []
         self.recycle_leftover_materials: List[int] = []
@@ -352,6 +355,11 @@ class OrderServer(Node):
                 self.task = builder(self.start_side)
                 self._update_lifecycle_meta_from_task(self.task)
         else:
+            if self.mode == "custom":
+                (
+                    self.requested_produce_ids,
+                    self.requested_recycle_ids,
+                ) = self._get_requested_products()
             self.task = self._generate_random_with_validation()
 
         self.print_official_style(self.task)
@@ -404,17 +412,105 @@ class OrderServer(Node):
 
     def _get_mode(self) -> str:
         param_mode = str(self.get_parameter("mode").value).strip().lower()
-        if param_mode in ("preset", "random"):
+        if param_mode in ("custom", "preset", "random"):
             return param_mode
 
-        has_preset = (self.tier, self.stage) in OFFICIAL_PRESET_BUILDERS
-        if has_preset:
-            mode_num = self.get_input_int(
-                "Task 생성 방식 선택 (1: 공식 preset, 2: random): ",
-                valid_values=[1, 2],
+        mode_num = self.get_input_int(
+            "Task 생성 방식 선택 (1: 지정 주문, 2: random): ",
+            valid_values=[1, 2],
+        )
+        return "custom" if mode_num == 1 else "random"
+
+    def _get_requested_products(self) -> Tuple[List[int], List[int]]:
+        produce_raw = str(self.get_parameter("produce_product_ids").value).strip()
+        recycle_raw = str(self.get_parameter("recycle_product_ids").value).strip()
+        produce_param = self.parse_product_ids(produce_raw) if produce_raw else []
+        recycle_param = self.parse_product_ids(recycle_raw) if recycle_raw else []
+        if produce_param or recycle_param:
+            self._validate_requested_products(produce_param, recycle_param)
+            return produce_param, recycle_param
+
+        self._print_product_menu()
+        produce_ids: List[int] = []
+        recycle_ids: List[int] = []
+        if self.config["orders"]:
+            produce_ids = self._prompt_product_ids(
+                f"생산 지정 주문 입력 (최대 {self.config['orders']}개, "
+                "ID/이름을 쉼표 또는 공백으로 구분, 없으면 Enter): ",
+                self.config["orders"],
             )
-            return "preset" if mode_num == 1 else "random"
-        return "random"
+        if self.config["returns"]:
+            recycle_ids = self._prompt_product_ids(
+                f"재활용 지정 주문 입력 (최대 {self.config['returns']}개, "
+                "ID/이름을 쉼표 또는 공백으로 구분, 없으면 Enter): ",
+                self.config["returns"],
+            )
+        self._validate_requested_products(produce_ids, recycle_ids)
+        return produce_ids, recycle_ids
+
+    def _print_product_menu(self) -> None:
+        allowed = set(TIER_PRODUCT_CANDIDATES[self.tier])
+        print("\n선택 가능한 제품 (같은 제품을 여러 번 입력할 수 있습니다)")
+        for product_id, (name, materials) in PRODUCT_DB.items():
+            if product_id in allowed:
+                print(f"  {product_id:<5} {name:<14} 원자재={materials}")
+        print()
+
+    def _prompt_product_ids(self, message: str, max_count: int) -> List[int]:
+        while True:
+            raw = input(message).strip()
+            if not raw:
+                return []
+            try:
+                product_ids = self.parse_product_ids(raw)
+                if len(product_ids) > max_count:
+                    raise ValueError(
+                        f"지정 주문은 최대 {max_count}개까지 입력할 수 있습니다."
+                    )
+                self._validate_product_ids_for_tier(product_ids)
+                return product_ids
+            except ValueError as exc:
+                print(f"입력 오류: {exc}")
+
+    @staticmethod
+    def parse_product_ids(raw: str) -> List[int]:
+        tokens = [token for token in re.split(r"[\s,]+", raw.strip()) if token]
+        product_ids: List[int] = []
+        for token in tokens:
+            if token.isdigit():
+                product_id = int(token)
+            else:
+                key = token.lower().replace("-", "").replace("_", "").replace(" ", "")
+                if key not in PRODUCT_NAME_TO_ID:
+                    raise ValueError(f"알 수 없는 제품: {token}")
+                product_id = PRODUCT_NAME_TO_ID[key]
+            if product_id not in PRODUCT_DB:
+                raise ValueError(f"알 수 없는 product_id: {product_id}")
+            product_ids.append(product_id)
+        return product_ids
+
+    def _validate_product_ids_for_tier(self, product_ids: Sequence[int]) -> None:
+        allowed = set(TIER_PRODUCT_CANDIDATES[self.tier])
+        disallowed = [product_id for product_id in product_ids if product_id not in allowed]
+        if disallowed:
+            raise ValueError(
+                f"{self.tier.capitalize()} Tier에서 허용되지 않는 제품: {disallowed}"
+            )
+
+    def _validate_requested_products(
+        self, produce_ids: Sequence[int], recycle_ids: Sequence[int]
+    ) -> None:
+        if len(produce_ids) > self.config["orders"]:
+            raise ValueError(
+                f"생산 지정 주문 수({len(produce_ids)})가 경기 규칙 "
+                f"({self.config['orders']}개)를 초과합니다."
+            )
+        if len(recycle_ids) > self.config["returns"]:
+            raise ValueError(
+                f"재활용 지정 주문 수({len(recycle_ids)})가 경기 규칙 "
+                f"({self.config['returns']}개)를 초과합니다."
+            )
+        self._validate_product_ids_for_tier(list(produce_ids) + list(recycle_ids))
 
     @staticmethod
     def get_input_int(msg: str, valid_values=None, min_value=None) -> int:
@@ -437,15 +533,62 @@ class OrderServer(Node):
     def _select_random_products(self) -> Tuple[List[int], List[int]]:
         produce_count = self.config["orders"]
         recycle_count = self.config["returns"]
-        total_count = produce_count + recycle_count
         candidates = list(TIER_PRODUCT_CANDIDATES[self.tier])
+        fixed_produce = list(getattr(self, "requested_produce_ids", []))
+        fixed_recycle = list(getattr(self, "requested_recycle_ids", []))
+        remaining_produce = produce_count - len(fixed_produce)
+        remaining_recycle = recycle_count - len(fixed_recycle)
+        fixed = fixed_produce + fixed_recycle
+        raw_target, raw_variance = self.config["raw_mat"]
+        low, high = raw_target - raw_variance, raw_target + raw_variance
+        fixed_raw = sum(len(PRODUCT_DB[pid][1]) for pid in fixed)
+        has_advanced = bool(set(fixed).intersection(ADVANCED_PRODUCT_IDS))
+        remaining_total = remaining_produce + remaining_recycle
 
-        if total_count > len(candidates):
-            selected = [random.choice(candidates) for _ in range(total_count)]
-        else:
-            selected = random.sample(candidates, total_count)
+        # 원자재 수와 Advanced 필수 조건을 동시에 만족하는 보충 주문을 찾는다.
+        memo = set()
 
-        return selected[:produce_count], selected[produce_count:]
+        def choose(
+            slots_left: int, raw_total: int, advanced_selected: bool
+        ) -> List[int] | None:
+            state = (slots_left, raw_total, advanced_selected)
+            if state in memo:
+                return None
+            if slots_left == 0:
+                advanced_ok = self.tier != "advanced" or advanced_selected
+                return [] if low <= raw_total <= high and advanced_ok else None
+
+            min_size = min(len(PRODUCT_DB[pid][1]) for pid in candidates)
+            max_size = max(len(PRODUCT_DB[pid][1]) for pid in candidates)
+            if raw_total + slots_left * min_size > high:
+                return None
+            if raw_total + slots_left * max_size < low:
+                return None
+
+            shuffled = candidates[:]
+            random.shuffle(shuffled)
+            for product_id in shuffled:
+                result = choose(
+                    slots_left - 1,
+                    raw_total + len(PRODUCT_DB[product_id][1]),
+                    advanced_selected or product_id in ADVANCED_PRODUCT_IDS,
+                )
+                if result is not None:
+                    return [product_id] + result
+            memo.add(state)
+            return None
+
+        generated = choose(remaining_total, fixed_raw, has_advanced)
+        if generated is None:
+            raise ValueError(
+                "지정 주문을 유지하면서 경기 원자재 수 범위와 Tier 규칙을 "
+                "만족하는 나머지 주문을 만들 수 없습니다. 지정 주문을 줄이거나 "
+                "다른 제품을 선택하세요."
+            )
+
+        produce_ids = fixed_produce + generated[:remaining_produce]
+        recycle_ids = fixed_recycle + generated[remaining_produce:]
+        return produce_ids, recycle_ids
 
     def _build_storage_materials_for_random(self, produce_ids: Sequence[int], recycle_ids: Sequence[int]) -> List[int]:
         produce_materials = product_materials(produce_ids)
@@ -498,15 +641,12 @@ class OrderServer(Node):
 
     def _generate_random_with_validation(self) -> Task:
         max_retry = 30
-        last_task = None
-        last_total = 0
         raw_target, raw_variance = self.config["raw_mat"]
         low, high = raw_target - raw_variance, raw_target + raw_variance
 
         for attempt in range(1, max_retry + 1):
             task = self._generate_random_task()
             total = self._raw_material_count_from_orders(task.order_list)
-            last_task, last_total = task, total
             if low <= total <= high:
                 if attempt > 1:
                     print(f"✓ {attempt}회 시도 만에 검증 통과 (원자재: {total}개)")
@@ -516,8 +656,10 @@ class OrderServer(Node):
                 f"목표 범위 [{low}, {high}] 벗어남, 재생성 중..."
             )
 
-        print(f"⚠ 경고: {max_retry}회 재시도 후에도 원자재 범위를 만족하지 못했습니다. 마지막 결과({last_total}개)를 사용합니다.")
-        return last_task
+        raise RuntimeError(
+            f"{max_retry}회 재시도 후에도 경기 원자재 범위 [{low}, {high}]를 "
+            "만족하는 Task를 생성하지 못했습니다."
+        )
 
     # ──────────────────────────────────────────────────────────
     # Meta / validation
@@ -562,7 +704,6 @@ class OrderServer(Node):
 
         print(f"\n# {self.tier.capitalize()} – {self.stage.capitalize()}\n")
         print(f"# start_side      = {self.start_side.upper()}")
-        print(f"# station_offset  = {station_offset(self.start_side)}")
         print(f"# generation_mode = {self.mode}")
         print(f"# time_limit      = {self.config['time']} min")
         print(f"# produce_count   = {produce_count}")

@@ -36,8 +36,8 @@ LOAD_SLOT_JOINTS = {
     4: np.array([-239.48,  20.95, 17.82, -13.53, 120.01, 21.54]),
     5: np.array([-225.70,  -3.09, 48.50, -18.08, 116.14, 33.65]),
     6: np.array([-242.58, -10.98, 55.32, -11.60, 114.11, 20.65]),
-    7: np.array([-284.63,   4.65, 36.07,   0.0,  139.28, -14.62]),
-    8: np.array([-305.47,  18.02, 19.24,   0.0,  142.74, -35.47]),
+    7: np.array([-284.66,   5.96, 33.57,   0.0,  140.47, -14.65]),
+    8: np.array([-304.82,  19.69, 15.69,   0.0,  144.62, -34.82]),
 }
 
 # 슬롯별 웨이포인트: 슬롯 1은 독립 경로, 슬롯 2~8은 공통 경유점 + 슬롯별 최종 위치
@@ -200,6 +200,12 @@ UNLOAD_Z_UP_MM = -55.0
 UNLOAD_X_DOWN_MM = 90.0
 UNLOAD_X_UP_MM = -90.0
 
+# 슬롯별 Tool X 이동 방향 부호 (+1.0 = X+, -1.0 = X-)
+UNLOAD_SLOT_X_DIR = {
+    7:  1.0,
+    8: -1.0,
+}
+
 # --- DELIVERY Z 상수 (배달 위치에서 물체 내려놓을 때, 일반 재료 전용) ---
 DELIVERY_Z_DOWN_MM = 115.0
 DELIVERY_Z_UP_MM = -115.0
@@ -241,34 +247,63 @@ ASSEMBLY_Z_DOWN_MM = 90.0   # layer 0 기준 블록 내려놓기 하강 거리 (
 ASSEMBLY_Z_UP_MM   = -90.0  # layer 0 기준 블록 내려놓기 상승 거리 (mm)
 BLOCK_H_MM         = 19.0   # 블록 1개 높이 (mm)
 
+# --- BigTree (46262) 전용 조립 상수 ---
+BIG_TREE_STACK_X_OFFSET_MM   = 32.0    # 슬롯B X3 오프셋: 4x2/상단 2x2 배치 위치 (mm)
+BIG_TREE_ASSEMBLE_Z_BASE_MM  = 70.0   # 조립 Z 기준값; 각 단계 = base - BLOCK_H_MM * n
+
 # UNLOAD 픽업용 슬롯 조인트 (direct move_j, 중간 웨이포인트 없음)
 # 키: slot 번호 (슬롯 2~6)
 UNLOAD_SLOT_JOINTS = {
-    20: np.array([-266.65,-10.78, 60.26, -1.40, 107.07, 2.67]),
-    21: np.array([-266.87, -7.18, 55.88, -1.31, 107.85, 2.47]),
-    22: np.array([-267.06, -3.39, 51.06, -1.24, 108.88, 2.3]),
-    23: np.array([-267.23, 0.65, 45.68, -1.18, 110.22, 2.14]),
-    24: np.array([-267.38, 5.07, 39.51, -1.13, 111.96, 1.98]),
-    30: np.array([-246.79, -8.18, 58.19, -9.5, 107.99, 18.52]),
-    31: np.array([-248.19, -4.65, 53.71, -9.0, 108.77, 17.25]),
-    32: np.array([-249.43, -0.91, 48.75, -8.56, 109.83, 16.07]),
-    33: np.array([-250.55, 3.14, 43.16, -8.18, 111.23, 14.97]),
-    34: np.array([-251.55, 7.64, 36.67, -7.88, 113.10, 13.91]),
-    40: np.array([-231.78, -1.0, 51.34, -15.23, 110.13, 30.48]),
-    41: np.array([-233.70, 2.51, 46.39, -14.67, 111.15, 28.58]),
-    42: np.array([-235.45, 6.37, 40.76, -14.18, 112.53, 26.75]),
-    43: np.array([-237.06, 10.76, 34.14, -13.78, 114.42, 24.94]),
-    44: np.array([-238.53, 16.09, 25.78, -13.53, 117.13, 23.05]),
-    50: np.array([-210.75, -15.79, 65.59, -22.38, 115.86, 46.85]),
-    51: np.array([-214.49, -13.46, 62.51, -21.35, 115.50, 43.62]),
-    52: np.array([-217.91, -10.93, 59.16, -20.37, 115.36, 40.63]),
-    53: np.array([-221.04, -8.21, 55.51, -19.45, 115.44, 37.87]),
-    54: np.array([-223.89, -5.26, 51.50, -18.61, 115.76, 35.31]),
-    60: np.array([-228.30, -25.67, 71.33, -16.99, 114.78, 31.97]),
-    61: np.array([-232.32, -22.33, 68.38, -15.49, 114.16, 28.85]),
-    62: np.array([-235.12, -19.44, 65.21, -14.21, 113.81, 26.18]),
-    63: np.array([-238.61, -16.42, 61.78, -13.11, 113.71, 23.89]),
-    64: np.array([-241.08, -13.25, 58.07, -12.17, 113.86, 21.89]),
+    20: np.array([-266.24, -9.60, 56.23, -1.59, 109.94, 2.91]),  # ref: [-266.24, -9.60, 56.23, -1.59, 109.94, 2.91]
+    21: np.array([-266.49, -5.88, 51.62, -1.50, 110.83, 2.69]),  # ref: [-266.49, -5.88, 51.62, -1.49, 110.83, 2.69]
+    22: np.array([-266.72, -1.93, 46.49, -1.41, 112.00, 2.49]),  # ref: [-266.72, -1.93, 46.49, -1.41, 112.01, 2.49]
+    23: np.array([-266.91, 2.35, 40.65, -1.35, 113.55, 2.30]),  # ref: [-266.91, 2.35, 40.65, -1.35, 113.55, 2.30]
+    24: np.array([-267.08, 7.17, 33.75, -1.29, 115.63, 2.12]),  # ref: [-267.08, 7.17, 33.75, -1.29, 115.63, 2.12]
+    30: np.array([-246.77, -6.53, 53.50, -9.69, 111.00, 18.00]),  # ref: [-246.77, -6.53, 53.50, -9.69, 111.00, 18.00]
+    31: np.array([-248.19, -2.84, 48.70, -9.18, 111.93, 16.71]),  # ref: [-248.19, -2.84, 48.70, -9.18, 111.93, 16.71]
+    32: np.array([-249.46, 1.14, 43.29, -8.75, 113.20, 15.51]),  # ref: [-249.46, 1.14, 43.30, -8.75, 113.20, 15.51]
+    33: np.array([-250.59, 5.55, 37.04, -8.40, 114.91, 14.36]),  # ref: [-250.59, 5.55, 37.04, -8.40, 114.91, 14.36]
+    34: np.array([-251.61, 10.68, 29.39, -8.14, 117.30, 13.22]),  # ref: [-251.61, 10.68, 29.39, -8.14, 117.30, 13.22]
+    40: np.array([-231.15, 0.67, 46.72, -15.76, 113.13, 30.14]),  # ref: [-231.15, 0.67, 46.72, -15.77, 113.13, 30.14]
+    41: np.array([-233.11, 4.40, 41.34, -15.21, 114.33, 28.16]),  # ref: [-233.11, 4.40, 41.34, -15.21, 114.33, 28.16]
+    42: np.array([-234.91, 8.62, 35.05, -14.76, 116.00, 26.21]),  # ref: [-234.91, 8.62, 35.05, -14.76, 116.01, 26.21]
+    43: np.array([-236.56, 13.65, 27.25, -14.45, 118.41, 24.22]),  # ref: [-236.56, 13.65, 27.25, -14.45, 118.41, 24.22]
+    44: np.array([-238.08, 20.63, 15.83, -14.46, 122.46, 21.87]),  # ref: [-238.08, 20.63, 15.83, -14.46, 122.46, 21.87]
+    50: np.array([-209.45, -14.62, 62.23, -23.19, 118.28, 46.92]),  # ref: [-209.45, -14.62, 62.23, -23.19, 118.28, 46.92]
+    51: np.array([-213.31, -12.27, 59.05, -22.13, 117.95, 43.60]),  # ref: [-213.31, -12.27, 59.05, -22.13, 117.95, 43.60]
+    52: np.array([-216.85, -9.70, 55.58, -21.13, 117.85, 40.53]),  # ref: [-216.85, -9.70, 55.58, -21.13, 117.85, 40.53]
+    53: np.array([-220.08, -6.91, 51.78, -20.19, 117.99, 37.69]),  # ref: [-220.08, -6.91, 51.78, -20.19, 117.99, 37.69]
+    54: np.array([-223.02, -3.87, 47.55, -19.33, 118.40, 35.04]),  # ref: [-223.02, -3.87, 47.56, -19.33, 118.40, 35.04]
+    60: np.array([-226.84, -23.79, 67.91, -17.83, 117.14, 32.37]),  # ref: [-226.84, -23.79, 67.91, -17.83, 117.14, 32.37]
+    61: np.array([-231.08, -21.03, 64.89, -16.24, 116.54, 29.12]),  # ref: [-231.08, -21.03, 64.89, -16.24, 116.54, 29.12]
+    62: np.array([-234.65, -18.13, 61.62, -14.88, 116.23, 26.36]),  # ref: [-234.66, -18.13, 61.62, -14.88, 116.22, 26.36]
+    63: np.array([-237.69, -15.06, 58.07, -13.72, 116.18, 23.98]),  # ref: [-237.69, -15.06, 58.07, -13.72, 116.18, 23.98]
+    64: np.array([-240.28, -11.83, 54.19, -12.73, 116.40, 21.91]),  # ref: [-240.28, -11.83, 54.19, -12.73, 116.40, 21.90]
+    # 20: np.array([-266.65,-10.78, 60.26, -1.40, 107.07, 2.67]),
+    # 21: np.array([-266.87, -7.18, 55.88, -1.31, 107.85, 2.47]),
+    # 22: np.array([-267.06, -3.39, 51.06, -1.24, 108.88, 2.3]),
+    # 23: np.array([-267.23, 0.65, 45.68, -1.18, 110.22, 2.14]),
+    # 24: np.array([-267.38, 5.07, 39.51, -1.13, 111.96, 1.98]),
+    # 30: np.array([-246.79, -8.18, 58.19, -9.5, 107.99, 18.52]),
+    # 31: np.array([-248.19, -4.65, 53.71, -9.0, 108.77, 17.25]),
+    # 32: np.array([-249.43, -0.91, 48.75, -8.56, 109.83, 16.07]),
+    # 33: np.array([-250.55, 3.14, 43.16, -8.18, 111.23, 14.97]),
+    # 34: np.array([-251.55, 7.64, 36.67, -7.88, 113.10, 13.91]),
+    # 40: np.array([-231.78, -1.0, 51.34, -15.23, 110.13, 30.48]),
+    # 41: np.array([-233.70, 2.51, 46.39, -14.67, 111.15, 28.58]),
+    # 42: np.array([-235.45, 6.37, 40.76, -14.18, 112.53, 26.75]),
+    # 43: np.array([-237.06, 10.76, 34.14, -13.78, 114.42, 24.94]),
+    # 44: np.array([-238.53, 16.09, 25.78, -13.53, 117.13, 23.05]),
+    # 50: np.array([-210.75, -15.79, 65.59, -22.38, 115.86, 46.85]),
+    # 51: np.array([-214.49, -13.46, 62.51, -21.35, 115.50, 43.62]),
+    # 52: np.array([-217.91, -10.93, 59.16, -20.37, 115.36, 40.63]),
+    # 53: np.array([-221.04, -8.21, 55.51, -19.45, 115.44, 37.87]),
+    # 54: np.array([-223.89, -5.26, 51.50, -18.61, 115.76, 35.31]),
+    # 60: np.array([-228.30, -25.67, 71.33, -16.99, 114.78, 31.97]),
+    # 61: np.array([-232.32, -22.33, 68.38, -15.49, 114.16, 28.85]),
+    # 62: np.array([-235.12, -19.44, 65.21, -14.21, 113.81, 26.18]),
+    # 63: np.array([-238.61, -16.42, 61.78, -13.11, 113.71, 23.89]),
+    # 64: np.array([-241.08, -13.25, 58.07, -12.17, 113.86, 21.89]),
 }
 
 MATERIAL_NAMES = {
@@ -314,14 +349,14 @@ ASSEMBLY_SEQUENCE = {
     48132: [  # ice_cream
         {'id': 4, 'layer': 0, 'x':  0.0},
         {'id': 8, 'layer': 1, 'x':  0.0},
-        {'id': 1, 'layer': 2, 'x':  1.0},
-        {'id': 3, 'layer': 2, 'x': -1.0},
+        {'id': 1, 'layer': 2, 'x':  16.0},
+        {'id': 3, 'layer': 2, 'x': -16.0},
         {'id': 2, 'layer': 3, 'x':  0.0},
     ],
     8518: [   # burger
         {'id': 8, 'layer': 0, 'x':  0.0},
-        {'id': 1, 'layer': 1, 'x':  2.0},
-        {'id': 5, 'layer': 1, 'x': -1.0},
+        {'id': 1, 'layer': 1, 'x':  32.0},
+        {'id': 5, 'layer': 1, 'x': -16.0},
         {'id': 8, 'layer': 2, 'x':  0.0},
     ],
 }
@@ -1286,8 +1321,9 @@ class AmrRobotNode(Node):
         #   슬롯 7/8: Tool X 방향으로 이동
         #   슬롯 2~6: Tool Z 방향으로 이동 (완성품은 ASSEMBLY_Z, 재료는 UNLOAD_Z)
         if slot in UNLOAD_SLOT_WAYPOINTS:
-            pick_down = [UNLOAD_X_DOWN_MM, 0.0, 0.0, 0.0, 0.0, 0.0]
-            pick_up   = [UNLOAD_X_UP_MM,   0.0, 0.0, 0.0, 0.0, 0.0]
+            x_dir = UNLOAD_SLOT_X_DIR.get(slot, 1.0)
+            pick_down = [UNLOAD_X_DOWN_MM * x_dir, 0.0, 0.0, 0.0, 0.0, 0.0]
+            pick_up   = [UNLOAD_X_UP_MM   * x_dir, 0.0, 0.0, 0.0, 0.0, 0.0]
         else:
             pickup_z_down = ASSEMBLY_Z_DOWN_MM if is_product else UNLOAD_Z_DOWN_MM
             pickup_z_up   = ASSEMBLY_Z_UP_MM   if is_product else UNLOAD_Z_UP_MM
@@ -1428,6 +1464,9 @@ class AmrRobotNode(Node):
         return results
 
     def sequence_assemble(self, product_id, target_slot=8):
+        if product_id == 46262:
+            return self.sequence_assemble_big_tree(target_slot=target_slot)
+
         if not self.is_robot_ready():
             return {
                 'success': False,
@@ -1708,6 +1747,322 @@ class AmrRobotNode(Node):
             'object_id': product_id,
             'message': 'assemble success',
         }
+
+    def sequence_assemble_big_tree(self, target_slot=8):
+        """46262 BigTree 전용 조립 시퀀스.
+
+        프리어셈블  2x2_green(2A) → slot-B LOAD 위치 배치
+        스텝 1      4x2_green(6B) → slot-B X3 배치 (layer 1)
+        스텝 2      2x2_green(2C) → slot-B X3 하강 → 재파지 → 전체 스택 리프트
+        스텝 3      RZ 90° → assembly_joint z 하강 → 릴리즈 → 30mm 상승
+        """
+        product_id = 46262
+
+        if not self.is_robot_ready():
+            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'robot not connected'}
+
+        assembly_wps = SLOT_WAYPOINTS.get(target_slot)
+        if assembly_wps is None:
+            self.get_logger().error(f'[BIG_TREE] no slot waypoints for target_slot={target_slot}')
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': f'no slot waypoints for target_slot={target_slot}'}
+
+        assembly_joint = assembly_wps[-1]
+
+        self.get_logger().info(f'[BIG_TREE START] product_id={product_id}, target_slot={target_slot}')
+
+        # ── 프리어셈블: 2x2_green(2) 파지 → slot-B LOAD 위치에 배치 ─────────
+        res = self.call_cargo('FIND_OBJECT', object_id=2)
+        if not res or not res.success:
+            self.get_logger().error('[BIG_TREE] pre_assemble: 2x2_green not found')
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: 2x2_green not found'}
+        slot_2a, layer_2a = res.slot, res.layer_index
+
+        if not self.call_gripper(False):
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: gripper open failed'}
+
+        if not self.move_to_slot(slot_2a, for_unload=True, layer_index=layer_2a):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: move to 2A slot failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                        label='pre_assemble 2A z down'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: 2A z down failed'}
+
+        if not self.call_gripper(True):
+            self.move_l_rel_checked([0.0, 0.0, -UNLOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                     label='pre_assemble 2A retreat')
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: 2A grip failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, -UNLOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                        label='pre_assemble 2A z up'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: 2A z up failed'}
+
+        res = self.call_cargo('CLEAR', slot=slot_2a, object_id=2)
+        if not res or not res.success:
+            self.go_home()
+            return {'success': False, 'slot': slot_2a, 'object_id': product_id,
+                    'message': 'pre_assemble: cargo CLEAR 2A failed'}
+
+        if not self.move_to_slot(target_slot):  # for_unload=False → LOAD 경로
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: move to slot-B load pos failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, LOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                        label='pre_assemble slot-B z down'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: slot-B place z down failed'}
+
+        if not self.call_gripper(False):
+            self.move_l_rel_checked([0.0, 0.0, -LOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                     label='pre_assemble slot-B retreat')
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: slot-B release failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, -LOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                        label='pre_assemble slot-B z up'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'pre_assemble: slot-B place z up failed'}
+
+        # ── 스텝 1: 4x2_green(6) 파지 → slot-B X3 위치에 배치 (layer 1) ──────
+        res = self.call_cargo('FIND_OBJECT', object_id=6)
+        if not res or not res.success:
+            self.get_logger().error('[BIG_TREE] step1: 4x2_green not found')
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: 4x2_green not found'}
+        slot_6b, layer_6b = res.slot, res.layer_index
+
+        slot_joint_6b = UNLOAD_SLOT_JOINTS.get(slot_6b * 10 + layer_6b)
+        if slot_joint_6b is None:
+            self.get_logger().error(f'[BIG_TREE] step1: no unload joint for slot={slot_6b} layer={layer_6b}')
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': f'step1: no unload joint for slot={slot_6b} layer={layer_6b}'}
+
+        if not self.call_gripper(False):
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: gripper open failed'}
+
+        if not self.move_j_checked(slot_joint_6b, label=f'step1 to slot={slot_6b}'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': f'step1: move to slot={slot_6b} failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                        label='step1 6B cargo z down'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: 6B z down failed'}
+
+        if not self.call_gripper(True):
+            self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0],
+                                     label='step1 6B retreat')
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: 6B grip failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0],
+                                        label='step1 6B cargo z up'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: 6B z up failed'}
+
+        res = self.call_cargo('CLEAR', slot=slot_6b, object_id=6)
+        if not res or not res.success:
+            self.go_home()
+            return {'success': False, 'slot': slot_6b, 'object_id': product_id,
+                    'message': 'step1: cargo CLEAR 6B failed'}
+
+        if not self.move_j_checked(assembly_joint, label='step1 to assembly_joint'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: move to assembly_joint failed'}
+
+        if not self.move_l_rel_checked([BIG_TREE_STACK_X_OFFSET_MM, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                        label='step1 X3 offset',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: X3 offset failed'}
+
+        z1 = BIG_TREE_ASSEMBLE_Z_BASE_MM - BLOCK_H_MM * 1  # 100 - 19 = 81mm
+        if not self.move_l_rel_checked([0.0, 0.0, z1, 0.0, 0.0, 0.0],
+                                        label='step1 z down',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: z down failed'}
+
+        if not self.call_gripper(False):
+            self.move_l_rel_checked([0.0, 0.0, -z1, 0.0, 0.0, 0.0],
+                                     label='step1 retreat', ref_frame=rb.ReferenceFrame.Tool)
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: release failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, -z1, 0.0, 0.0, 0.0],
+                                        label='step1 z up',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: z up failed'}
+
+        if not self.move_l_rel_checked([-BIG_TREE_STACK_X_OFFSET_MM, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                        label='step1 X3 return',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step1: X3 return failed'}
+
+        # ── 스텝 2: 2x2_green(2) 파지 → slot-B X3 하강 → 재파지 → 전체 스택 리프트
+        res = self.call_cargo('FIND_OBJECT', object_id=2)
+        if not res or not res.success:
+            self.get_logger().error('[BIG_TREE] step2: 2x2_green not found')
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: 2x2_green not found'}
+        slot_2c, layer_2c = res.slot, res.layer_index
+
+        slot_joint_2c = UNLOAD_SLOT_JOINTS.get(slot_2c * 10 + layer_2c)
+        if slot_joint_2c is None:
+            self.get_logger().error(f'[BIG_TREE] step2: no unload joint for slot={slot_2c} layer={layer_2c}')
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': f'step2: no unload joint for slot={slot_2c} layer={layer_2c}'}
+
+        if not self.call_gripper(False):
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: gripper open failed'}
+
+        if not self.move_j_checked(slot_joint_2c, label=f'step2 to slot={slot_2c}'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': f'step2: move to slot={slot_2c} failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                        label='step2 2C cargo z down'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: 2C z down failed'}
+
+        if not self.call_gripper(True):
+            self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0],
+                                     label='step2 2C retreat')
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: 2C grip failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0],
+                                        label='step2 2C cargo z up'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: 2C z up failed'}
+
+        res = self.call_cargo('CLEAR', slot=slot_2c, object_id=2)
+        if not res or not res.success:
+            self.go_home()
+            return {'success': False, 'slot': slot_2c, 'object_id': product_id,
+                    'message': 'step2: cargo CLEAR 2C failed'}
+
+        if not self.move_j_checked(assembly_joint, label='step2 to assembly_joint'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: move to assembly_joint failed'}
+
+        if not self.move_l_rel_checked([BIG_TREE_STACK_X_OFFSET_MM, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                        label='step2 X3 offset',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: X3 offset failed'}
+
+        z2 = BIG_TREE_ASSEMBLE_Z_BASE_MM - BLOCK_H_MM * 2  # 100 - 38 = 62mm
+        if not self.move_l_rel_checked([0.0, 0.0, z2, 0.0, 0.0, 0.0],
+                                        label='step2 2C z down to stack',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: 2C z down to stack failed'}
+
+        # 재파지: 2C가 4x2에 연결된 전체 스택(2x2+4x2+2x2)을 함께 파지
+        if not self.call_gripper(True):
+            self.get_logger().error('[BIG_TREE] step2: re-grip failed')
+            self.move_l_rel_checked([0.0, 0.0, -z2, 0.0, 0.0, 0.0],
+                                     label='step2 re-grip retreat', ref_frame=rb.ReferenceFrame.Tool)
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: re-grip failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, -z2, 0.0, 0.0, 0.0],
+                                        label='step2 stack lift',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: stack lift failed'}
+
+        if not self.move_l_rel_checked([-BIG_TREE_STACK_X_OFFSET_MM, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                        label='step2 X3 return',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step2: X3 return failed'}
+
+        # ── 스텝 3: RZ 90° → 블록4 위치 z 하강 → 릴리즈 → 30mm 상승 ──────────
+        if not self.move_l_rel_checked([0.0, 0.0, 0.0, 0.0, 0.0, 90.0],
+                                        label='step3 rz 90'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step3: rz rotation failed'}
+
+        if not self.move_j_checked(assembly_joint, label='step3 to block4 pos'):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step3: move to block4 pos failed'}
+
+        z3 = BIG_TREE_ASSEMBLE_Z_BASE_MM - BLOCK_H_MM * 3  # 100 - 57 = 43mm
+        if not self.move_l_rel_checked([0.0, 0.0, z3, 0.0, 0.0, 0.0],
+                                        label='step3 z down',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step3: z down failed'}
+
+        if not self.call_gripper(False):
+            self.get_logger().error('[BIG_TREE] step3: release failed')
+            self.move_l_rel_checked([0.0, 0.0, -z3, 0.0, 0.0, 0.0],
+                                     label='step3 retreat', ref_frame=rb.ReferenceFrame.Tool)
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step3: release failed'}
+
+        if not self.move_l_rel_checked([0.0, 0.0, -z3, 0.0, 0.0, 0.0],
+                                        label='step3 z up',
+                                        ref_frame=rb.ReferenceFrame.Tool):
+            self.go_home()
+            return {'success': False, 'slot': -1, 'object_id': product_id,
+                    'message': 'step3: 30mm up failed'}
+
+        # ── cargo 등록 ────────────────────────────────────────────────────────
+        res = self.call_cargo('SET', slot=target_slot, object_id=product_id)
+        if not res or not res.success:
+            self.get_logger().error('[BIG_TREE] cargo SET failed')
+            return {'success': False, 'slot': target_slot, 'object_id': product_id,
+                    'message': 'assembled but cargo SET failed'}
+
+        self.get_logger().info(f'[ASSEMBLE DONE] big_tree product_id={product_id}, slot={target_slot}')
+        return {'success': True, 'slot': target_slot, 'object_id': product_id, 'message': 'assemble success'}
 
 
 def main(args=None):

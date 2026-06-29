@@ -36,6 +36,7 @@ from sml_msgs.action import NavTask, WbTask
 from sml_msgs.msg import Task
 from sml_msgs.srv import ArmCommand
 from std_msgs.msg import Int32
+from std_srvs.srv import Trigger
 
 from robocup_planner.planning.aidlist_builder import compute_net_aidlist
 from robocup_planner.planning.cargo_allocator import CargoAllocator
@@ -87,6 +88,7 @@ class PlannerNode(Node):
         self.declare_parameter('wb_action', 'wb_task')
         self.declare_parameter('arm_service', '/amr_robot_command')
         self.declare_parameter('wb_ready_topic', '/workbench/product_ready')
+        self.declare_parameter('post_process_service', '/robocup_navigator/post_process')
         self.declare_parameter('driving_velocity', 0.5)
         self.declare_parameter('parking_duration', 1.5)
         self.declare_parameter('exiting_duration', 1.0)
@@ -97,6 +99,7 @@ class PlannerNode(Node):
         wb_action = self.get_parameter('wb_action').get_parameter_value().string_value
         arm_service = self.get_parameter('arm_service').get_parameter_value().string_value
         wb_ready_topic = self.get_parameter('wb_ready_topic').get_parameter_value().string_value
+        post_process_service = self.get_parameter('post_process_service').get_parameter_value().string_value
 
         if not wp_path:
             self.get_logger().warning("waypoint_yaml parameter is empty; distances will be inf")
@@ -114,6 +117,7 @@ class PlannerNode(Node):
         self._nav_client = ActionClient(self, NavTask, nav_action)
         self._wb_client = ActionClient(self, WbTask, wb_action)
         self._arm_client = self.create_client(ArmCommand, arm_service)
+        self._post_process_client = self.create_client(Trigger, post_process_service)
 
         # Active executor (one at a time)
         self._executor_thread: Optional[threading.Thread] = None
@@ -450,6 +454,39 @@ class PlannerNode(Node):
         if not success_holder[0]:
             self.get_logger().error(f"Navigation to station {station_id} failed")
         return success_holder[0]
+
+    def call_post_process(self) -> bool:
+        """Trigger post-process exit maneuver (backup + rotate) after docking.
+
+        Calls /robocup_navigator/post_process.  Returns True on success or if
+        there was nothing pending (navigator responds NO_PENDING_POST_PROCESS).
+        """
+        if not self._post_process_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warning("[POST] post_process service unavailable")
+            return False
+
+        future = self._post_process_client.call_async(Trigger.Request())
+        done = threading.Event()
+        result_holder = [None]
+
+        def _cb(f):
+            result_holder[0] = f.result()
+            done.set()
+
+        future.add_done_callback(_cb)
+        done.wait()
+
+        resp = result_holder[0]
+        if resp is None or not resp.success:
+            msg = resp.message if resp else 'no response'
+            self.get_logger().warning(f"[POST] post_process failed: {msg}")
+            return False
+
+        self.get_logger().info(
+            f"[POST] post_process OK"
+            + (f": {resp.message}" if resp.message else "")
+        )
+        return True
 
     def navigate_subgoal(self, station_id: int) -> bool:
         """Navigate to the sub_goal (approach) position of station_id.

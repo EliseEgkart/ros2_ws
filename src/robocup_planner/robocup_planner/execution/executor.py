@@ -126,6 +126,7 @@ class Executor:
                 station_id=entry['station_id'],
                 product_id=entry['recycle_product_id'],
             )
+            self._node.call_post_process()
 
         # Bring all collected products to the workbench for disassembly.
         sid = self._plan.workbench_station_id
@@ -149,6 +150,7 @@ class Executor:
                             f"  ! cargo full during recycle unload of mat {mat_id}; "
                             "block lost (planner should have routed this to storage pickup)"
                         )
+        self._node.call_post_process()
 
     # ------------------------------------------------------------------
     # Phase 2 — Main pickup loop
@@ -198,6 +200,7 @@ class Executor:
                 )
                 self._on_material_placed(mat_id, cargo_id)
 
+            self._node.call_post_process()
             self._mid_cursor += 1
 
             # Post-station checks (order: workbench first, then delivery).
@@ -284,6 +287,7 @@ class Executor:
             self._log("  → overflow drop: unloading all cargo to workbench")
             self._unload_all_materials()
 
+        self._node.call_post_process()
         self._en_route_to_wb = False
 
     def _unload_product_materials(self, product_id: int) -> None:
@@ -340,6 +344,8 @@ class Executor:
             self._node.arm_deliver(product_id=slot.product_id, from_cargo_id=slot.cargo_id)
             self._allocator.free_slot(slot.cargo_id)
             self._pending_deliveries -= 1
+
+        self._node.call_post_process()
 
     # ------------------------------------------------------------------
     # Utility

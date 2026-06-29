@@ -369,6 +369,7 @@ class RobocupNavigator(Node):
             str(self.get_parameter('stations_file').value)
         ).expanduser()
         frame_id = self.get_parameter('frame_id').value
+        side_mode = str(self.get_parameter('side_mode').value).strip().upper()
 
         if not path.exists():
             self.get_logger().error(f'Station file not found: {path}')
@@ -413,9 +414,15 @@ class RobocupNavigator(Node):
                 continue
 
             if not sequence:
-                self.get_logger().error(
-                    f'Station {station_id} has empty sequence.'
-                )
+                if self._station_belongs_to_side(station_id, side_mode):
+                    self.get_logger().error(
+                        f'Station {station_id} has empty sequence.'
+                    )
+                else:
+                    self.get_logger().warn(
+                        f'Station {station_id} has empty sequence; '
+                        f'ignored for side_mode={side_mode}.'
+                    )
                 continue
 
             stations[station_id] = StationProfile(
@@ -426,6 +433,11 @@ class RobocupNavigator(Node):
             )
 
         return waypoints_map, stations, frame_id
+
+    def _station_belongs_to_side(self, station_id: int, side_mode: str) -> bool:
+        if side_mode == 'B':
+            return 9 <= station_id <= 20
+        return 0 <= station_id <= 8
 
     def _goal_callback(self, goal_request):
         with self._busy_lock:

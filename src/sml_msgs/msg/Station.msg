@@ -1,4 +1,3 @@
-# Station.msg
 int32 ST_STORAGE=1
 int32 ST_WORKBENCH=2
 int32 ST_CUSTOMER=3

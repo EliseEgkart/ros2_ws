@@ -10,11 +10,12 @@ class ManualCommandNode(Node):
         self.get_logger().info('[MANUAL] manual_command_node started')
         self.get_logger().info('[MANUAL] commands: load / unload / exit')
 
-    def call_arm(self, action, object_ids, location=''):
+    def call_arm(self, action, object_ids, location='', station_id=0):
         req = ArmCommand.Request()
         req.action = action
         req.object_ids = object_ids
         req.location = location
+        req.station_id = station_id
 
         while not self.client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warn('[MANUAL] waiting for /amr_robot_command service...')
@@ -61,18 +62,20 @@ class ManualCommandNode(Node):
                 elif cmd == 'load':
                     raw = input('object_id (쉼표 구분, 예: 1,3,5): ').strip()
                     object_ids = self.parse_object_ids(raw)
-                    self.call_arm('LOAD', object_ids)
+                    sid = int(input('station_id: ').strip())
+                    self.call_arm('LOAD', object_ids, station_id=sid)
 
                 elif cmd == 'unload':
                     raw = input('object_id (쉼표 구분, 예: 34,13): ').strip()
                     object_ids = self.parse_object_ids(raw)
                     sid = int(input('station_id (6=워크벤치 / 8=고객센터): ').strip())
-                    self.call_arm('UNLOAD', object_ids, location=str(sid))
+                    self.call_arm('UNLOAD', object_ids, station_id=sid)
 
                 elif cmd == 'assemble':
                     raw = input('product_id (예: 34): ').strip()
                     object_ids = self.parse_object_ids(raw)
-                    self.call_arm('ASSEMBLE', object_ids)
+                    sid = int(input('station_id (target_slot, 예: 7 또는 8): ').strip())
+                    self.call_arm('ASSEMBLE', object_ids, station_id=sid)
 
                 elif cmd == '':
                     continue

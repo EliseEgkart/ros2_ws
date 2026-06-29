@@ -1,4 +1,3 @@
-# Order.msg
 int32 OT_PRODUCE=1
 int32 OT_RECYCLE=2
 

@@ -15,18 +15,18 @@ DEFAULT_ROBOT_IP = "10.0.2.8"
 
 HOME_JOINT_DEG        = np.array([-90.0,  0.0,   90.0,  0.0, 90.0,  0.0])
 MOVING_JOINT_DEG      = np.array([-90.0, -26.02, 140.8, 0.0, 65.22, 0.0])
-VISION_LOAD_JOINT_DEG = np.array([-90.0,  13.28,  75.45, 0.0, 91.27, 0.0])
+VISION_LOAD_JOINT_DEG = np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0])
 # np.array([-90.0, 13.82, 83.37, 0.0, 82.82, 0.0]), z=280.28
 # np.array([-90.0, 13.43, 80.49, 0.0, 86.09, 0.0]), z=301.28
-# np.array([-90.0, 13.28,  75.45, 0.0, 91.27, 0.0]), z=331.28 main
-# np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]), z=361.28
+# np.array([-90.0, 13.28,  75.45, 0.0, 91.27, 0.0]), z=331.28 main 학교
+# np.array([-90.0, 13.70, 69.94, 0.0, 96.36, 0.0]), z=361.28 대회장
 # np.array([-90.0, 14.26, 66.11, 0.0, 99.62, 0.0]),  z=381.28
 
 # 슬롯 2~8 공통 경유점 (슬롯 1은 경로가 달라 별도 관리)
 SLOT_COMMON_WPS = [
     np.array([-90.0,   -20.81,  107.71, 0.0,  93.11,  0.0]),
     np.array([-160.21, -8.27,  125.95, 0.46,  60.24,  0.0]),
-    np.array([-220.0,  -11.96,   57.40, 0.0, 100.40,  0.0]),
+    np.array([-220.0,  -11.96,   47.40, 0.0, 100.40,  0.0]),
 ]
 
 # LOAD 시 슬롯별 최종 접근 위치 (슬롯 2~8)
@@ -36,8 +36,8 @@ LOAD_SLOT_JOINTS = {
     4: np.array([-239.48,  20.95, 17.82, -13.53, 120.01, 21.54]),
     5: np.array([-225.70,  -3.09, 48.50, -18.08, 116.14, 33.65]),
     6: np.array([-242.58, -10.98, 55.32, -11.60, 114.11, 20.65]),
-    7: np.array([-284.66,   5.96, 33.57,   0.0,  140.47, -14.65]),
-    8: np.array([-304.82,  19.69, 15.69,   0.0,  144.62, -34.82]),
+    7: np.array([-284.66,   1.20, 43.65,   0.0,  135.15, -14.65]),
+    8: np.array([-304.82,  11.95, 31.44,   0.0,  136.61, -34.83]),
 }
 
 # 슬롯별 웨이포인트: 슬롯 1은 독립 경로, 슬롯 2~8은 공통 경유점 + 슬롯별 최종 위치
@@ -46,7 +46,7 @@ SLOT_WAYPOINTS = {
         np.array([-90.0, -20.81, 107.71, 0.0, 93.11, 0.0]),
         np.array([-15.0, -36.42, 117.55, 0.0, 98.86, 0.0]),
         np.array([35.0, 15.0, 23.0, 0.0, 100.0, 0.0]),
-        np.array([73.17, 20.33, 29.56, 0.84, 127.89, -16.84]),
+        np.array([73.71, 31.20, 13.67, -2.18, 139.91, -17.89]),
     ],
     **{slot: SLOT_COMMON_WPS + [joint] for slot, joint in LOAD_SLOT_JOINTS.items()}
 }
@@ -183,10 +183,10 @@ UNLOAD_Z_DOWN_MM = 70.0
 UNLOAD_Z_UP_MM = -70.0
 
 # --- 슬롯 1 전용 Z 상수 (LOAD/UNLOAD 공통) ---
-SLOT1_Z_DOWN_MM = 30.0
-SLOT1_Z_UP_MM   = -30.0
+SLOT1_Z_DOWN_MM = 25.0
+SLOT1_Z_UP_MM   = -25.0
 
-# --- UNLOAD X 상수 (슬롯 7/8 언로드 시 Tool X 방향 이동) ---
+# --- UNLOAD X 상수 (슬롯 7/8 언로드 시 Cargo Tool X 방향 이동) ---
 UNLOAD_X_DOWN_MM = 90.0
 UNLOAD_X_UP_MM = -90.0
 
@@ -197,8 +197,8 @@ UNLOAD_SLOT_X_DIR = {
 }
 
 # --- DELIVERY Z 상수 (배달 위치에서 물체 내려놓을 때, 일반 재료 전용) ---
-DELIVERY_Z_DOWN_MM = 115.0
-DELIVERY_Z_UP_MM = -115.0
+DELIVERY_Z_DOWN_MM = 165.0 #학교 115 #대회 165
+DELIVERY_Z_UP_MM = -165.0
 
 
 # --- 완성품(Products) 전용 delivery Z 상수 (층별 3단계) ---
@@ -233,9 +233,9 @@ L_VEL, L_ACC = 700, 1500
 #   - 딕셔너리 키 = target_slot (7 또는 8)
 #   - 마지막 요소가 실제 조립 위치 (= ASSEMBLY_JOINT[target_slot])
 #   - sequence_assemble 에서 순서대로 move_j 로 이동
-ASSEMBLY_Z_DOWN_MM = 90.0   # layer 0 기준 블록 내려놓기 하강 거리 (mm)
-ASSEMBLY_Z_UP_MM   = -90.0  # layer 0 기준 블록 내려놓기 상승 거리 (mm)
-BLOCK_H_MM         = 19.0   # 블록 1개 높이 (mm)
+ASSEMBLY_Z_DOWN_MM = 70.0   # layer 0 기준 블록 내려놓기 하강 거리 (mm)
+ASSEMBLY_Z_UP_MM   = -70.0  # layer 0 기준 블록 내려놓기 상승 거리 (mm)
+BLOCK_H_MM         = 18.0   # 블록 1개 높이 (mm)
 
 # --- BigTree (46262) 전용 조립 상수 ---
 BIG_TREE_STACK_X_OFFSET_MM   = 32.0    # 슬롯B X3 오프셋: 4x2/상단 2x2 배치 위치 (mm)
@@ -332,7 +332,7 @@ ASSEMBLY_SEQUENCE = {
     442:  [4, 4, 2],     # carrot:        2x2노랑 → 2x2노랑 → 2x2초록
     241:  [2, 4, 1],     # traffic_light: 2x2초록 → 2x2노랑 → 2x2빨강
     462:  [4, 6, 2],     # small_tree:    2x2노랑 → 4x2초록 → 2x2초록
-    711:  [1, 1, 3],     # hammer:        2x2빨강 → 2x2빨강 → 2x2파랑
+    711:  [1, 1, 7],     # hammer:        2x2빨강 → 2x2빨강 → 2x2파랑
     4482: [4, 4, 8, 2],  # big_carrot:    2x2노랑 → 2x2노랑 → 4x2노랑 → 2x2초록
     # dict 형식: {'id': 재료id, 'layer': 높이레이어, 'x': Tool X 오프셋(mm)}
     # 같은 layer 값이 여러 번 나오면 같은 높이에서 x 위치만 달리해 배치한다.
@@ -345,9 +345,9 @@ ASSEMBLY_SEQUENCE = {
     ],
     8518: [   # burger
         {'id': 8, 'layer': 0, 'x':  0.0},
+        {'id': 5, 'layer': 1, 'x': -17},
         {'id': 1, 'layer': 1, 'x':  32.0},
-        {'id': 5, 'layer': 1, 'x': -16.0},
-        {'id': 8, 'layer': 2, 'x':  0.0},
+        {'id': 8, 'layer': 2, 'x': -1.0},
     ],
 }
 
@@ -375,7 +375,7 @@ class AmrRobotNode(Node):
             self.robot = rb.Cobot(self.robot_ip)
             self.rc = rb.ResponseCollector()
             self.robot.set_operation_mode(self.rc, rb.OperationMode.Real)
-            self.robot.set_speed_bar(self.rc, 1.0)
+            self.robot.set_speed_bar(self.rc, 0.8)
             self.robot.set_speed_multiplier(self.rc, 1.5)
             self.robot_ready = True
             self.get_logger().info(f'[AMR] robot connected: {self.robot_ip}')

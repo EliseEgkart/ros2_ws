@@ -10,12 +10,13 @@ class ManualCommandNode(Node):
         self.get_logger().info('[MANUAL] manual_command_node started')
         self.get_logger().info('[MANUAL] commands: load / unload / exit')
 
-    def call_arm(self, action, object_ids, location='', station_id=0):
+    def call_arm(self, action, object_ids, location=None, station_id=0):
         req = ArmCommand.Request()
         req.action = action
-        req.object_ids = object_ids
-        req.location = location
-        req.station_id = station_id
+        req.object_ids = [int(object_id) for object_id in object_ids]
+        req.station_id = int(station_id)
+        req.location = int(req.station_id if location is None else location)
+        req.slide_ids = []
 
         while not self.client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warn('[MANUAL] waiting for /amr_robot_command service...')

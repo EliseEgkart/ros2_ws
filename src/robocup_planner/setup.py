@@ -24,6 +24,8 @@ setup(
     entry_points={
         'console_scripts': [
             'planner_node = robocup_planner.planner_node:main',
+            'sml_time_estimator_node = robocup_planner.sml_time_estimator_node:main',
+
         ],
     },
 )

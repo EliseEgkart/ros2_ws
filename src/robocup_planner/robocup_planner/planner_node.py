@@ -244,7 +244,7 @@ class PlannerNode(Node):
         customer_stations = []
 
         for st in msg.arena_layout:
-            if st.station_type == StationMsg.ST_STORAGE:
+            if st.station_type in (StationMsg.ST_STORAGE, StationMsg.ST_HYBRID):
                 mids = [int(m) for m in st.material_ids]
                 regular = [m for m in mids if 1 <= m <= 8]
                 b1080 = [m for m in mids if 10 <= m <= 80]

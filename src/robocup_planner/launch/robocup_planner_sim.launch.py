@@ -79,7 +79,7 @@ def generate_launch_description():
         package='robocup_planner',
         executable='planner_node',
         name='robocup_planner',
-        parameters=[params_file],
+        parameters=[params_file, {'side': side}],
         output='screen',
     )
 

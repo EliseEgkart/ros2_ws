@@ -52,9 +52,11 @@ from robocup_planner.planning.midlist_builder import (
     check_storage_satisfies,
     merge_into_midlist,
 )
+from robocup_planner.execution.cargo_state import CargoManager
 from robocup_planner.execution.executor import Executor, Plan
 from robocup_planner.product_catalog import (
     is_intransit_eligible,
+    get_material_count,
     BATCH_TO_MATERIAL,
     BATCH_COUNT,
 )
@@ -95,6 +97,7 @@ class PlannerNode(Node):
         self.declare_parameter('driving_velocity', 0.5)
         self.declare_parameter('parking_duration', 1.5)
         self.declare_parameter('exiting_duration', 1.0)
+        self.declare_parameter('side', 'a')
         self.declare_parameter('debug_export', False)
         self.declare_parameter('debug_export_dir', '')
         # JSON string: {"product_id": weight, ...}  e.g. '{"8518": 2.0}'
@@ -112,6 +115,7 @@ class PlannerNode(Node):
         _export_dir = self.get_parameter('debug_export_dir').get_parameter_value().string_value
         self._debug_export_dir: str = _export_dir if _export_dir else '/tmp/robocup_planner'
 
+        self._side: str = self.get_parameter('side').get_parameter_value().string_value.lower()
         _weights_json = self.get_parameter('product_weights_json').get_parameter_value().string_value
         if _weights_json:
             try:
@@ -129,6 +133,9 @@ class PlannerNode(Node):
             self._calc: Optional[DistanceCalculator] = None
         else:
             self._calc = DistanceCalculator(wp_path)
+
+        self._cargo = CargoManager()
+        self._cargo_lock = threading.Lock()
 
         # --- ROS interfaces ---
         self._task_sub = self.create_subscription(
@@ -175,7 +182,15 @@ class PlannerNode(Node):
         executor = Executor(plan, self)
         self._active_executor = executor
 
-        thread = threading.Thread(target=executor.run, daemon=True, name='executor')
+        def _run_and_shutdown():
+            try:
+                executor.run()
+            finally:
+                self.get_logger().info("Execution complete — shutting down")
+                if rclpy.ok():
+                    rclpy.shutdown()
+
+        thread = threading.Thread(target=_run_and_shutdown, daemon=True, name='executor')
         self._executor_thread = thread
         thread.start()
 
@@ -251,7 +266,7 @@ class PlannerNode(Node):
         if customer_station_id is None:
             raise RuntimeError("No customer station in arena layout")
 
-        home_id = 0
+        home_id = 14 if self._side == 'b' else 0
         workbench_station_id = self._select_fixed_workbench(workbench_station_ids)
         self.get_logger().info(
             f"Selected workbench station {workbench_station_id} "
@@ -470,7 +485,7 @@ class PlannerNode(Node):
     @staticmethod
     def _select_fixed_workbench(workbench_station_ids):
         """Prefer the official fixed assembly workbench for each arena side."""
-        for station_id in (6, 16):
+        for station_id in (4, 10):
             if station_id in workbench_station_ids:
                 return station_id
         return workbench_station_ids[0]
@@ -485,9 +500,6 @@ class PlannerNode(Node):
         add the returned Counter to net_aidlist so those materials are picked
         from storage in Phase 2 instead of being silently lost.
         """
-        from robocup_planner.execution.cargo_state import CargoManager
-        from robocup_planner.product_catalog import get_material_count
-
         sim = CargoManager()
         overflow: Counter = Counter()
         for pid in recycle_ids:
@@ -513,6 +525,33 @@ class PlannerNode(Node):
             "routing overflowed needed materials to storage pickup"
         )
         return overflow_needed
+
+    # ------------------------------------------------------------------
+    # Cargo state helpers (thread-safe, called from executor thread)
+    # ------------------------------------------------------------------
+
+    def cargo_has_all_materials(self, product_id: int) -> bool:
+        """Return True if all materials required to assemble product_id are in cargo 2-6."""
+        with self._cargo_lock:
+            return self._cargo.find_materials_for_product(product_id) is not None
+
+    def cargo_is_full(self) -> bool:
+        """Return True if no cargo 2-6 slot can fit even the smallest (2-unit) block."""
+        with self._cargo_lock:
+            return not self._cargo.is_any_slot_available(1)
+
+    def arm_unload_all_materials(self) -> bool:
+        """Unload every material in cargo 2-6 to the current workbench (overflow buffer)."""
+        with self._cargo_lock:
+            all_mats = self._cargo.all_materials()
+        success = True
+        for cargo_id, mat_id in all_mats:
+            ok = self.arm_unload_material(mat_id)
+            if ok:
+                with self._cargo_lock:
+                    self._cargo.remove_material(cargo_id, mat_id)
+            success = success and ok
+        return success
 
     # ------------------------------------------------------------------
     # Blocking helpers called by Executor (run in executor thread)
@@ -608,6 +647,9 @@ class PlannerNode(Node):
         with self._intransit_lock:
             self._intransit_events.append(event)
 
+        with self._cargo_lock:
+            materials_to_consume = self._cargo.find_materials_for_product(product_id) or []
+
         def _assemble():
             self.get_logger().info(
                 f"[ARM] ASSEMBLE product={product_id} cargo={cargo_id}"
@@ -618,7 +660,11 @@ class PlannerNode(Node):
                 location=cargo_id,
                 station_id=cargo_id,
             )
-            if not success:
+            if success:
+                with self._cargo_lock:
+                    for c_id, mat_id in materials_to_consume:
+                        self._cargo.remove_material(c_id, mat_id)
+            else:
                 self.get_logger().warning(
                     f"[ARM] ASSEMBLE failed: product={product_id}"
                 )
@@ -670,7 +716,13 @@ class PlannerNode(Node):
         goal.product_id = product_id
         self._wb_client.send_goal_async(goal).add_done_callback(_goal_cb)
         done.wait()
-        return success_holder[0]
+        result = success_holder[0]
+        if result and work_type == WB_RECYCLE:
+            for mat_id, cnt in get_material_count(product_id).items():
+                for _ in range(cnt):
+                    with self._cargo_lock:
+                        self._cargo.place_material(mat_id)
+        return result
 
     def _arm_call(
         self,
@@ -700,12 +752,16 @@ class PlannerNode(Node):
 
     def arm_pick_material(self, station_id: int, material_id: int) -> bool:
         """Pick one material block from a storage station and place it on cargo."""
-        return self._arm_call(
+        success = self._arm_call(
             ARM_PICK,
             object_ids=[material_id],
             location=station_id,
             station_id=station_id,
         )
+        if success:
+            with self._cargo_lock:
+                self._cargo.place_material(material_id)
+        return success
 
     def arm_pick_product(self, station_id: int, product_id: int) -> bool:
         """Pick an assembled product from a customer counter (for recycling)."""
@@ -768,8 +824,9 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            node.destroy_node()
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -27,72 +27,75 @@ MIX_BATCH_ID: int = 90  # unknown type/count batch
 
 # All 11 product definitions.
 # Single-column products list 'blocks' in bottom-to-top build order.
-# Multi-layer products list 'layers' in bottom-to-top order; each
+# Workbench-only products list 'layers' in bottom-to-top order; each
 # layer is a list of block IDs placed side-by-side at that level.
-# All products are assembled by the AMR cargo arm (cargo 7/8).
-# Multi-layer placement requires the arm to handle side-by-side positioning;
-# the arm team is responsible for asymmetric placement given the product_id.
 PRODUCTS: dict = {
     81: {
         'name': 'E-Stop',
+        'workbench_only': False,
         'blocks': [8, 1],
     },
     34: {
         'name': 'Battery',
+        'workbench_only': False,
         'blocks': [3, 4],
     },
     13: {
         'name': 'Magnet',
+        'workbench_only': False,
         'blocks': [1, 3],
     },
     442: {
         'name': 'Carrot',
+        'workbench_only': False,
         'blocks': [4, 4, 2],
     },
     241: {
         'name': 'Traffic Light',
+        'workbench_only': False,
         'blocks': [2, 4, 1],
     },
     462: {
         'name': 'Small Tree',
+        'workbench_only': False,
         'blocks': [4, 6, 2],
     },
     4482: {
         'name': 'Big Carrot',
+        'workbench_only': False,
         'blocks': [4, 4, 8, 2],
     },
     711: {
         'name': 'Hammer',
+        'workbench_only': False,
         'blocks': [1, 1, 7],
     },
-    # --- Multi-layer products: contain side-by-side layers ---
-    # Arm team handles side-by-side positioning from product_id alone.
+    # --- Workbench-only: contain side-by-side layers ---
     8518: {
-        'name': 'Burger',
-        # Bottom: [8], middle: [5, 1] side-by-side, top: [8]
+        'name': 'Big Tree',
+        'workbench_only': True,
+        # Bottom layer: [8], middle: [5, 1] side-by-side, top: [8]
         'layers': [[8], [5, 1], [8]],
     },
     46262: {
-        'name': 'Big Tree',
+        'name': 'Ice Cream',
+        'workbench_only': True,
         # Bottom: [4], then [6,2] side-by-side, then [6], top: [2]
         'layers': [[4], [6, 2], [6], [2]],
     },
     48132: {
-        'name': 'Ice Cream',
+        'name': 'Burger',
+        'workbench_only': True,
         # Bottom: [4], then [8], then [1,3] side-by-side, top: [2]
         'layers': [[4], [8], [1, 3], [2]],
     },
 }
 
 
-def _is_multilayer(product_id: int) -> bool:
-    return 'layers' in PRODUCTS[product_id]
-
-
 def get_material_count(product_id: int) -> Counter:
     """Frequency map of materials required for one unit of product_id."""
     p = PRODUCTS[product_id]
-    if _is_multilayer(product_id):
+    if p['workbench_only']:
         materials = [m for layer in p['layers'] for m in layer]
     else:
         materials = p['blocks']
@@ -100,48 +103,32 @@ def get_material_count(product_id: int) -> Counter:
 
 
 def is_intransit_eligible(product_id: int) -> bool:
-    """All products are assembled in-transit by the AMR cargo arm (cargo 7/8).
-    The workbench is used only for RECYCLE (disassembly) operations."""
-    return True
+    """True if this product can be assembled in-transit (no side-by-side layers)."""
+    return not PRODUCTS[product_id]['workbench_only']
 
 
 def get_base_block(product_id: int) -> int:
     """The bottom-most block for a single-column product."""
-    if _is_multilayer(product_id):
-        return PRODUCTS[product_id]['layers'][0][0]
-    return PRODUCTS[product_id]['blocks'][0]
+    p = PRODUCTS[product_id]
+    if p['workbench_only']:
+        raise ValueError(f"Product {product_id} is workbench-only and has no single base block")
+    return p['blocks'][0]
 
 
 def get_build_order(product_id: int) -> List[int]:
-    """All block IDs in assembly order (bottom → top, left → right per layer).
-
-    For single-column products: returns the blocks list directly.
-    For multi-layer products: flattens layers in order.
-    This flat list drives material tracking; the arm uses get_assembly_layers()
-    for the actual side-by-side placement instructions.
-    """
+    """Block IDs in assembly order (bottom → top) for in-transit assembly."""
     p = PRODUCTS[product_id]
-    if _is_multilayer(product_id):
-        return [m for layer in p['layers'] for m in layer]
+    if p['workbench_only']:
+        raise ValueError(f"Product {product_id} is workbench-only")
     return list(p['blocks'])
 
 
-def get_assembly_layers(product_id: int) -> List[List[int]]:
-    """Full layer structure for the arm ASSEMBLE command, bottom → top.
-
-    Single-column products: each layer contains exactly one block.
-    Multi-layer products: layers may contain multiple blocks placed side-by-side.
-    The arm team uses this to determine positioning for each block.
-    """
-    p = PRODUCTS[product_id]
-    if _is_multilayer(product_id):
-        return [list(layer) for layer in p['layers']]
-    return [[b] for b in p['blocks']]
-
-
 def get_all_layers(product_id: int) -> List[List[int]]:
-    """Alias for get_assembly_layers(); kept for backward compatibility."""
-    return get_assembly_layers(product_id)
+    """All layers for a workbench-only product, bottom → top."""
+    p = PRODUCTS[product_id]
+    if not p['workbench_only']:
+        return [[b] for b in p['blocks']]
+    return [list(layer) for layer in p['layers']]
 
 
 def product_name(product_id: int) -> str:

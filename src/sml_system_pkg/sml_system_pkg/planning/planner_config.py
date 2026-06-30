@@ -6,8 +6,7 @@ Slot convention used by Step.slide_ids:
     slot 7-8 : AMR assembly slots / recycle auxiliary preload slots
 """
 
-from dataclasses import dataclass, field
-from typing import Dict
+from dataclasses import dataclass
 
 PRODUCT_NAMES = {
     34: 'Battery',
@@ -38,13 +37,8 @@ PRODUCT_MATERIALS = {
     46262: [4, 6, 2, 6, 2],
 }
 
-# All products are now assembled by the AMR cargo arm (Mod 3).
-WB_ONLY_PRODUCTS: set = set()  # workbench is recycle-only; kept for backward compat
-AMR_CAPABLE_PRODUCTS = set(PRODUCT_MATERIALS)
-
-# Default priority weights per product (higher = assembled first / gets cargo 7/8 slot first).
-# Increase a product's weight to raise its priority; decrease to lower it.
-PRODUCT_WEIGHTS: Dict[int, float] = {pid: 1.0 for pid in PRODUCT_MATERIALS}
+WB_ONLY_PRODUCTS = {8518, 48132, 46262}
+AMR_CAPABLE_PRODUCTS = set(PRODUCT_MATERIALS) - WB_ONLY_PRODUCTS
 
 RAW_TO_BATCH = {1: 10, 2: 20, 3: 30, 4: 40, 5: 50, 6: 60, 7: 70, 8: 80}
 BATCH_TO_RAW = {batch: raw for raw, batch in RAW_TO_BATCH.items()}
@@ -116,7 +110,3 @@ class PlannerConfig:
     raw_slide_capacity_units: int = RAW_SLIDE_CAPACITY_UNITS
     max_amr_assembly_jobs: int = len(ASSEMBLY_SLOT_INDICES)
     max_recycle_preload_products: int = 3
-
-    # Per-product assembly priority weights.  Higher weight = earlier cargo 7/8 slot assignment.
-    # Can be overridden at runtime via the product_weights_json ROS2 parameter.
-    product_weights: Dict[int, float] = field(default_factory=lambda: dict(PRODUCT_WEIGHTS))

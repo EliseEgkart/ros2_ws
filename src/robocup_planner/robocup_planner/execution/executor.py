@@ -116,14 +116,23 @@ class Executor:
             self._node.call_post_process()
 
             self._log(f"  → navigate to workbench {workbench_id} for RECYCLE")
-            self._node.navigate_subgoal(workbench_id)
-            self._wait_for_intransit_assembly()
             self._node.navigate_goal(workbench_id)
             self._node.arm_unload_product_to_workbench(
                 product_id=pid,
                 station_id=workbench_id,
             )
             self._node.wb_task('RECYCLE', pid)
+
+            # Pick up each material block the workbench placed on its output shelf.
+            for mat_id, cnt in get_material_count(pid).items():
+                for _ in range(cnt):
+                    self._log(f"    ← pick recycled mat {mat_id} from workbench")
+                    self._node.arm_pick_material(
+                        station_id=workbench_id,
+                        material_id=mat_id,
+                    )
+                    self._start_ready_intransit_assembly()
+
             self._node.call_post_process()
 
     # ------------------------------------------------------------------

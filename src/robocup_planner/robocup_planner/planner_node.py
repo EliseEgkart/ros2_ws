@@ -731,13 +731,7 @@ class PlannerNode(Node):
         goal.product_id = product_id
         self._wb_client.send_goal_async(goal).add_done_callback(_goal_cb)
         done.wait()
-        result = success_holder[0]
-        if result and work_type == WB_RECYCLE:
-            for mat_id, cnt in get_material_count(product_id).items():
-                for _ in range(cnt):
-                    with self._cargo_lock:
-                        self._cargo.place_material(mat_id)
-        return result
+        return success_holder[0]
 
     def _arm_call(
         self,

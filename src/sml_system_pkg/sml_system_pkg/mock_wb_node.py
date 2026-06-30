@@ -1,26 +1,44 @@
-"""
-mock_wb_node.py
-wb_task Action 서버 mock.
-goal 수신 → PROCESSING 피드백 → delay 후 success=True 반환.
+"""Mock server for the ``wb_task`` action.
+
+The simulated work time follows the same per-connection model as the planner:
+
+* PRODUCE: number of material connections * produce time
+* RECYCLE: number of material connections * recycle time
 """
 
 import time
+
 import rclpy
-from rclpy.node import Node
 from rclpy.action import ActionServer
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
 
 from sml_msgs.action import WbTask
 
-WB_DELAY = 10.0  # 작업 시뮬레이션 시간 (초)
+from sml_system_pkg.planning.planner_config import (
+    PRODUCT_MATERIALS,
+    WB_PRODUCE_TIME_SEC_PER_CONNECTION,
+    WB_RECYCLE_TIME_SEC_PER_CONNECTION,
+)
 
 
 class MockWbNode(Node):
 
     def __init__(self):
         super().__init__('mock_wb_node')
-        self.cbg = ReentrantCallbackGroup()
+        self.cbg = MutuallyExclusiveCallbackGroup()
+
+        self.declare_parameter(
+            'produce_time_sec_per_connection',
+            WB_PRODUCE_TIME_SEC_PER_CONNECTION,
+        )
+        self.declare_parameter(
+            'recycle_time_sec_per_connection',
+            WB_RECYCLE_TIME_SEC_PER_CONNECTION,
+        )
+        self.declare_parameter('unknown_product_delay_sec', 0.5)
+        self.declare_parameter('max_delay_sec', 600.0)
 
         self._action_server = ActionServer(
             self,
@@ -29,34 +47,70 @@ class MockWbNode(Node):
             execute_callback=self._execute_cb,
             callback_group=self.cbg,
         )
-        self.get_logger().info('[MOCK WB] wb_task 서버 시작')
+
+        self.get_logger().info(
+            '[MOCK WB] wb_task 서버 시작 | '
+            f'produce={self._p("produce_time_sec_per_connection"):.2f}s/connection, '
+            f'recycle={self._p("recycle_time_sec_per_connection"):.2f}s/connection'
+        )
+
+    def _p(self, name: str) -> float:
+        return float(self.get_parameter(name).value)
+
+    def _compute_delay(self, work_type: str, product_id: int) -> float:
+        materials = PRODUCT_MATERIALS.get(int(product_id))
+        if not materials:
+            delay = self._p('unknown_product_delay_sec')
+        else:
+            connections = max(0, len(materials) - 1)
+            parameter = (
+                'recycle_time_sec_per_connection'
+                if work_type == 'RECYCLE'
+                else 'produce_time_sec_per_connection'
+            )
+            delay = connections * self._p(parameter)
+
+        return min(
+            max(0.0, delay),
+            max(0.0, self._p('max_delay_sec')),
+        )
 
     def _execute_cb(self, goal_handle):
-        work_type  = goal_handle.request.work_type
-        product_id = goal_handle.request.product_id
+        work_type = str(goal_handle.request.work_type).upper()
+        product_id = int(goal_handle.request.product_id)
+
+        if work_type not in ('PRODUCE', 'RECYCLE'):
+            goal_handle.abort()
+            result = WbTask.Result()
+            result.success = False
+            result.fail_reason = f'UNKNOWN_WORK_TYPE:{work_type}'
+            self.get_logger().error(
+                f'[MOCK WB] 지원하지 않는 work_type={work_type}'
+            )
+            return result
+
+        delay_sec = self._compute_delay(work_type, product_id)
         self.get_logger().info(
-            f'[MOCK WB] goal 수신: work_type={work_type}, product_id={product_id}')
+            f'[MOCK WB] {work_type} 시작 '
+            f'product_id={product_id}, delay={delay_sec:.2f}s'
+        )
 
-        # 피드백: PROCESSING
-        fb = WbTask.Feedback()
-        fb.status = 'PROCESSING'
-        goal_handle.publish_feedback(fb)
+        feedback = WbTask.Feedback()
+        feedback.status = 'WORKING'
+        goal_handle.publish_feedback(feedback)
 
-        time.sleep(WB_DELAY / 2)
+        time.sleep(delay_sec)
 
-        # 피드백: 작업 중 상태
-        fb.status = work_type  # "PRODUCING" or "RECYCLING"
-        goal_handle.publish_feedback(fb)
-
-        time.sleep(WB_DELAY / 2)
-
+        feedback.status = 'COMPLETED'
+        goal_handle.publish_feedback(feedback)
         goal_handle.succeed()
 
         result = WbTask.Result()
         result.success = True
         result.fail_reason = ''
         self.get_logger().info(
-            f'[MOCK WB] 완료: {work_type} product_id={product_id}')
+            f'[MOCK WB] {work_type} 완료 product_id={product_id}'
+        )
         return result
 
 

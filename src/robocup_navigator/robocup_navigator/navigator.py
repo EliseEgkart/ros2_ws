@@ -7,9 +7,11 @@ import time
 
 import rclpy
 import yaml
+from action_msgs.msg import GoalStatus
 from ament_index_python.packages import get_package_share_directory
+from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, Twist
-from nav2_msgs.action import FollowWaypoints
+from nav2_msgs.action import BackUp, FollowWaypoints, Spin as Nav2Spin
 from rclpy.action import (
     ActionClient,
     ActionServer,
@@ -36,6 +38,14 @@ class StationProfile:
         self.post_process = post_process
 
 
+class RotationProfile:
+    def __init__(self, waypoint_name: str, direction: str, angle_deg: float):
+        self.waypoint_name = waypoint_name
+        self.direction = direction
+        self.angle_deg = angle_deg
+        self.angle_rad = math.radians(angle_deg)
+
+
 class RobocupNavigator(Node):
     """Action server that converts station IDs into stable Nav2 sequences."""
 
@@ -47,82 +57,174 @@ class RobocupNavigator(Node):
         self._active_nav_goal_handle = None
         self._pending_post_process_profile: Optional[StationProfile] = None
 
-        default_yaml = str(
-            Path(get_package_share_directory('robocup_navigator'))
-            / 'params'
-            / 'robocup_waypoint.yaml'
+        share_params_dir = (
+            Path(get_package_share_directory('robocup_navigator')) / 'params'
         )
+        source_params_dir = (
+            Path.home() / 'ros2_ws/src/robocup_navigator/params'
+        )
+        default_yaml_path = source_params_dir / 'robocup_waypoint.yaml'
+        if not default_yaml_path.exists():
+            default_yaml_path = share_params_dir / 'robocup_waypoint.yaml'
+        default_yaml = str(default_yaml_path)
 
-        # ## 변경되는 부분
-        # A/B별 후진 거리, 회전 방향, 회전 각도, 전방 목표 거리를 읽을 YAML 기본 경로
-        default_motion_profiles_yaml = str(
-            Path(get_package_share_directory('robocup_navigator'))
-            / 'params'
-            / 'nav_motion_profiles.yaml'
+        default_params_path = source_params_dir / 'robocup_navigator_params.yaml'
+        if not default_params_path.exists():
+            default_params_path = share_params_dir / 'robocup_navigator_params.yaml'
+        default_params = self._load_default_params_file(default_params_path)
+
+        def default_param(name: str, fallback):
+            return default_params.get(name, fallback)
+
+        default_rotation_profiles_path = (
+            source_params_dir / 'robocup_rotation_profiles.yaml'
         )
+        if not default_rotation_profiles_path.exists():
+            default_rotation_profiles_path = (
+                share_params_dir / 'robocup_rotation_profiles.yaml'
+            )
+        default_rotation_profiles_yaml = str(default_rotation_profiles_path)
 
         self.declare_parameter('stations_file', default_yaml)
-        self.declare_parameter('frame_id', 'map')
-        self.declare_parameter('navigate_action_name', 'navigate_to_station')
+        self.declare_parameter('frame_id', default_param('frame_id', 'map'))
+        self.declare_parameter(
+            'navigate_action_name',
+            default_param('navigate_action_name', 'navigate_to_station'),
+        )
         self.declare_parameter(
             'post_process_service_name',
-            '/robocup_navigator/post_process',
+            default_param(
+                'post_process_service_name',
+                '/robocup_navigator/post_process',
+            ),
         )
 
-        # ## 변경되는 부분
-        # 실행 시 side_mode:=A 또는 side_mode:=B 로 선택
-        # motion_profiles_file은 params/nav_motion_profiles.yaml을 기본으로 사용
-        self.declare_parameter('side_mode', 'A')
+        self.declare_parameter('side_mode', default_param('side_mode', 'A'))
         self.declare_parameter(
-            'motion_profiles_file',
-            default_motion_profiles_yaml,
+            'rotation_profiles_file',
+            default_rotation_profiles_yaml,
         )
 
-        self.declare_parameter('follow_waypoints_action_name',
-                                'follow_waypoints')
-        self.declare_parameter('follow_waypoints_server_timeout_sec', 10.0)
-        self.declare_parameter('nav_result_timeout_sec', 120.0)
+        self.declare_parameter(
+            'follow_waypoints_action_name',
+            default_param('follow_waypoints_action_name', 'follow_waypoints'),
+        )
+        self.declare_parameter(
+            'follow_waypoints_server_timeout_sec',
+            default_param('follow_waypoints_server_timeout_sec', 10.0),
+        )
+        self.declare_parameter(
+            'nav_result_timeout_sec',
+            default_param('nav_result_timeout_sec', 120.0),
+        )
 
-        self.declare_parameter('cmd_vel_topic', 'cmd_vel')
-        self.declare_parameter('scan_topic', '/scan')
-        self.declare_parameter('front_edge_sample_count', 5)
-        self.declare_parameter('front_edge_skip_count', 0)
-        self.declare_parameter('scan_stale_timeout_sec', 0.5)
-        self.declare_parameter('front_min_valid_range', 0.005)
-        self.declare_parameter('front_max_valid_range', 5.0)
-        self.declare_parameter('scan_debug', True)
-        self.declare_parameter('scan_debug_period_sec', 1.0)
+        self.declare_parameter(
+            'cmd_vel_topic',
+            default_param('cmd_vel_topic', 'cmd_vel'),
+        )
+        self.declare_parameter('scan_topic', default_param('scan_topic', '/scan'))
+        self.declare_parameter(
+            'front_edge_sample_count',
+            default_param('front_edge_sample_count', 5),
+        )
+        self.declare_parameter(
+            'front_edge_skip_count',
+            default_param('front_edge_skip_count', 0),
+        )
+        self.declare_parameter(
+            'scan_stale_timeout_sec',
+            default_param('scan_stale_timeout_sec', 0.5),
+        )
+        self.declare_parameter(
+            'front_min_valid_range',
+            default_param('front_min_valid_range', 0.005),
+        )
+        self.declare_parameter(
+            'front_max_valid_range',
+            default_param('front_max_valid_range', 5.0),
+        )
+        self.declare_parameter('scan_debug', default_param('scan_debug', True))
+        self.declare_parameter(
+            'scan_debug_period_sec',
+            default_param('scan_debug_period_sec', 1.0),
+        )
 
-        self.declare_parameter('approach_after_goal', True)
-        self.declare_parameter('target_front_distance', 0.47)
-        self.declare_parameter('target_distance_tolerance', 0.01)
-        self.declare_parameter('approach_speed', 0.08)
-        self.declare_parameter('approach_min_speed', 0.05)
-        self.declare_parameter('approach_slowdown_distance', 0.15)
-        self.declare_parameter('approach_timeout_sec', 12.0)
-        self.declare_parameter('fail_on_alignment_timeout', False)
+        self.declare_parameter(
+            'approach_after_goal',
+            default_param('approach_after_goal', True),
+        )
+        self.declare_parameter(
+            'target_front_distance',
+            default_param('target_front_distance', 0.47),
+        )
+        self.declare_parameter(
+            'target_distance_tolerance',
+            default_param('target_distance_tolerance', 0.01),
+        )
+        self.declare_parameter(
+            'approach_speed',
+            default_param('approach_speed', 0.08),
+        )
+        self.declare_parameter(
+            'approach_min_speed',
+            default_param('approach_min_speed', 0.05),
+        )
+        self.declare_parameter(
+            'approach_slowdown_distance',
+            default_param('approach_slowdown_distance', 0.15),
+        )
+        self.declare_parameter(
+            'approach_timeout_sec',
+            default_param('approach_timeout_sec', 12.0),
+        )
+        self.declare_parameter(
+            'fail_on_alignment_timeout',
+            default_param('fail_on_alignment_timeout', False),
+        )
 
-        self.declare_parameter('backup_after_goal', True)
-        self.declare_parameter('backup_distance', 0.20)
-        self.declare_parameter('backup_speed', 0.14)
-        self.declare_parameter('backup_timeout_sec', 5.0)
+        self.declare_parameter(
+            'backup_after_goal',
+            default_param('backup_after_goal', True),
+        )
+        self.declare_parameter(
+            'backup_distance',
+            default_param('backup_distance', 0.20),
+        )
+        self.declare_parameter(
+            'backup_speed',
+            default_param('backup_speed', 0.14),
+        )
+        self.declare_parameter(
+            'backup_timeout_sec',
+            default_param('backup_timeout_sec', 5.0),
+        )
+        self.declare_parameter(
+            'backup_action_name',
+            default_param('backup_action_name', 'backup'),
+        )
 
-        self.declare_parameter('rotate_after_backup', True)
-
-        # ## 변경되는 부분
-        # rotate_direction: "left"면 왼쪽 회전, "right"면 오른쪽 회전
-        self.declare_parameter('rotate_direction', 'left')
-
-        self.declare_parameter('rotate_angle_deg', 150.0)
-        self.declare_parameter('rotate_angular_speed', 1.4)
-        self.declare_parameter('rotate_timeout_sec', 8.0)
-        self.declare_parameter('motion_period_sec', 0.05)
+        self.declare_parameter(
+            'rotate_after_backup',
+            default_param('rotate_after_backup', True),
+        )
+        self.declare_parameter(
+            'spin_action_name',
+            default_param('spin_action_name', 'spin'),
+        )
+        self.declare_parameter(
+            'rotate_angular_speed',
+            default_param('rotate_angular_speed', 1.4),
+        )
+        self.declare_parameter(
+            'rotate_timeout_sec',
+            default_param('rotate_timeout_sec', 8.0),
+        )
+        self.declare_parameter(
+            'motion_period_sec',
+            default_param('motion_period_sec', 0.05),
+        )
 
         self._load_parameters()
-
-        # ## 변경되는 부분
-        # 기본 파라미터를 먼저 읽은 뒤, A/B motion profile YAML 값으로 덮어씀
-        self._load_motion_profile_file()
 
         self._latest_front_distance: Optional[float] = None
         self._latest_scan_time = None
@@ -135,6 +237,7 @@ class RobocupNavigator(Node):
         self._waypoints_map, self._stations, self._frame_id = (
             self._load_station_file()
         )
+        self._rotation_profiles = self._load_rotation_profile_file()
 
         follow_action = self.get_parameter(
             'follow_waypoints_action_name'
@@ -145,11 +248,25 @@ class RobocupNavigator(Node):
         ).value
         cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
         scan_topic = self.get_parameter('scan_topic').value
+        backup_action = self.get_parameter('backup_action_name').value
+        spin_action = self.get_parameter('spin_action_name').value
 
         self._follow_client = ActionClient(
             self,
             FollowWaypoints,
             follow_action,
+            callback_group=self._cbg,
+        )
+        self._backup_client = ActionClient(
+            self,
+            BackUp,
+            backup_action,
+            callback_group=self._cbg,
+        )
+        self._spin_client = ActionClient(
+            self,
+            Nav2Spin,
+            spin_action,
             callback_group=self._cbg,
         )
         self._cmd_vel_pub = self.create_publisher(Twist, cmd_vel_topic, 10)
@@ -179,8 +296,40 @@ class RobocupNavigator(Node):
         self.get_logger().info(
             f'Robocup navigator ready: action="{nav_action}", '
             f'post_process="{post_process_service}", '
+            f'backup_action="{backup_action}", spin_action="{spin_action}", '
             f'stations={sorted(self._stations.keys())}, scan="{scan_topic}"'
         )
+
+    def _load_default_params_file(self, path: Path):
+        if not path.exists():
+            self.get_logger().warn(
+                f'Navigator params file not found: {path}. '
+                'Using built-in fallback defaults.'
+            )
+            return {}
+
+        try:
+            with path.open('r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Failed to read navigator params file: {exc}. '
+                'Using built-in fallback defaults.'
+            )
+            return {}
+
+        params = {}
+        if isinstance(data, dict):
+            node_section = data.get('robocup_navigator', {})
+            if isinstance(node_section, dict):
+                raw_params = node_section.get('ros__parameters', {})
+                if isinstance(raw_params, dict):
+                    params = raw_params
+
+        self.get_logger().info(
+            f'Loaded navigator default params: {len(params)} from {path}'
+        )
+        return params
 
     def _load_parameters(self):
         self._follow_server_timeout_sec = float(
@@ -246,16 +395,6 @@ class RobocupNavigator(Node):
             self.get_parameter('rotate_after_backup').value
         )
 
-        # ## 변경되는 부분
-        # 회전 방향 파라미터 추가. left면 angular.z 양수, right면 angular.z 음수로 사용
-        self._rotate_direction = str(
-            self.get_parameter('rotate_direction').value
-        ).lower()
-
-        self._rotate_angle_deg = float(
-            self.get_parameter('rotate_angle_deg').value
-        )
-        self._rotate_angle_rad = math.radians(self._rotate_angle_deg)
         self._rotate_angular_speed = float(
             self.get_parameter('rotate_angular_speed').value
         )
@@ -266,101 +405,89 @@ class RobocupNavigator(Node):
             self.get_parameter('motion_period_sec').value
         )
 
-    # ## 변경되는 부분
-    # stations_file을 읽는 방식과 동일하게, A/B motion profile YAML을 읽어서
-    # 후진 거리, 회전 방향, 회전 각도, 전방 목표 거리만 덮어쓴다.
-    def _load_motion_profile_file(self):
-        side_mode = str(self.get_parameter('side_mode').value).upper()
+    def _load_rotation_profile_file(self):
         path = Path(
-            str(self.get_parameter('motion_profiles_file').value)
+            str(self.get_parameter('rotation_profiles_file').value)
         ).expanduser()
 
         if not path.exists():
             self.get_logger().warn(
-                f'Motion profile file not found: {path}. '
-                'Using default motion parameters.'
+                f'Rotation profile file not found: {path}. '
+                'Goal rotations are disabled.'
             )
-            return
+            return {}
 
         try:
             with path.open('r', encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
         except Exception as exc:
             self.get_logger().error(
-                f'Failed to read motion profile file: {exc}. '
-                'Using default motion parameters.'
+                f'Failed to read rotation profile file: {exc}. '
+                'Goal rotations are disabled.'
             )
-            return
+            return {}
 
-        profiles = data.get('profiles', {}) if isinstance(data, dict) else {}
-        profile = profiles.get(side_mode)
-
-        if profile is None:
-            self.get_logger().warn(
-                f'Motion profile "{side_mode}" not found in {path}. '
-                'Using default motion parameters.'
-            )
-            return
-
-        try:
-            self._backup_distance = float(
-                profile.get('backup_distance', self._backup_distance)
-            )
-            self._backup_speed = float(
-                profile.get('backup_speed', self._backup_speed)
-            )
-
-            self._rotate_direction = str(
-                profile.get('rotate_direction', self._rotate_direction)
-            ).lower()
-
-            self._rotate_angle_deg = float(
-                profile.get('rotate_angle_deg', self._rotate_angle_deg)
-            )
-            self._rotate_angle_rad = math.radians(self._rotate_angle_deg)
-
-            self._rotate_angular_speed = float(
-                profile.get(
-                    'rotate_angular_speed',
-                    self._rotate_angular_speed,
-                )
-            )
-
-            self._target_front_distance = float(
-                profile.get(
-                    'target_front_distance',
-                    self._target_front_distance,
-                )
-            )
-
-            if self._rotate_direction not in ('left', 'right'):
+        raw_profiles = (
+            data.get('rotation_profiles', {})
+            if isinstance(data, dict)
+            else {}
+        )
+        profiles = {}
+        for waypoint_name, entry in raw_profiles.items():
+            if not self._is_goal_waypoint(waypoint_name):
                 self.get_logger().warn(
-                    f'Invalid rotate_direction="{self._rotate_direction}". '
-                    'Use "left" or "right". Fallback to "left".'
+                    f'Ignoring rotation profile for non-goal waypoint: '
+                    f'{waypoint_name}'
                 )
-                self._rotate_direction = 'left'
-
-            self.get_logger().info(
-                f'Loaded motion profile: side={side_mode}, '
-                f'backup_distance={self._backup_distance:.3f} m, '
-                f'backup_speed={self._backup_speed:.3f} m/s, '
-                f'rotate_direction={self._rotate_direction}, '
-                f'rotate_angle={self._rotate_angle_deg:.1f} deg, '
-                f'rotate_angular_speed={self._rotate_angular_speed:.3f} rad/s, '
-                f'target_front_distance={self._target_front_distance:.3f} m'
+                continue
+            if not isinstance(entry, dict):
+                self.get_logger().warn(
+                    f'Ignoring invalid rotation profile: {waypoint_name}'
+                )
+                continue
+            direction = str(entry.get('direction', '')).lower()
+            if direction not in ('clockwise', 'counterclockwise'):
+                self.get_logger().warn(
+                    f'Ignoring {waypoint_name}: invalid direction '
+                    f'"{direction}".'
+                )
+                continue
+            try:
+                angle_deg = float(entry.get('angle_deg', 0.0))
+            except (TypeError, ValueError):
+                self.get_logger().warn(
+                    f'Ignoring {waypoint_name}: invalid angle_deg.'
+                )
+                continue
+            if angle_deg <= 0.0:
+                self.get_logger().warn(
+                    f'Ignoring {waypoint_name}: angle_deg must be > 0.'
+                )
+                continue
+            profiles[waypoint_name] = RotationProfile(
+                waypoint_name,
+                direction,
+                angle_deg,
             )
 
-        except Exception as exc:
-            self.get_logger().error(
-                f'Invalid motion profile "{side_mode}": {exc}. '
-                'Using motion parameters loaded before profile override.'
-            )
+        self.get_logger().info(
+            f'Loaded waypoint rotation profiles: {len(profiles)} from {path}'
+        )
+        return profiles
+
+    def _is_goal_waypoint(self, waypoint_name: str):
+        return (
+            waypoint_name.startswith('station_')
+            and waypoint_name.endswith('_goal')
+            and not waypoint_name.endswith('_sub_goal')
+        )
 
     def _load_station_file(self):
         path = Path(
             str(self.get_parameter('stations_file').value)
         ).expanduser()
         frame_id = self.get_parameter('frame_id').value
+        side_mode = str(self.get_parameter('side_mode').value).strip().upper()
 
         if not path.exists():
             self.get_logger().error(f'Station file not found: {path}')
@@ -376,8 +503,12 @@ class RobocupNavigator(Node):
         if isinstance(data, dict) and data.get('frame_id'):
             frame_id = data['frame_id']
 
-        waypoints_map = data.get('waypoints', {}) if isinstance(data, dict) else {}
-        raw_stations = data.get('stations', {}) if isinstance(data, dict) else {}
+        waypoints_map = (
+            data.get('waypoints', {}) if isinstance(data, dict) else {}
+        )
+        raw_stations = (
+            data.get('stations', {}) if isinstance(data, dict) else {}
+        )
         stations = {}
 
         for raw_id, entry in raw_stations.items():
@@ -401,9 +532,15 @@ class RobocupNavigator(Node):
                 continue
 
             if not sequence:
-                self.get_logger().error(
-                    f'Station {station_id} has empty sequence.'
-                )
+                if self._station_belongs_to_side(station_id, side_mode):
+                    self.get_logger().error(
+                        f'Station {station_id} has empty sequence.'
+                    )
+                else:
+                    self.get_logger().warn(
+                        f'Station {station_id} has empty sequence; '
+                        f'ignored for side_mode={side_mode}.'
+                    )
                 continue
 
             stations[station_id] = StationProfile(
@@ -414,6 +551,11 @@ class RobocupNavigator(Node):
             )
 
         return waypoints_map, stations, frame_id
+
+    def _station_belongs_to_side(self, station_id: int, side_mode: str) -> bool:
+        if side_mode == 'B':
+            return 9 <= station_id <= 20
+        return 0 <= station_id <= 8
 
     def _goal_callback(self, goal_request):
         with self._busy_lock:
@@ -478,22 +620,44 @@ class RobocupNavigator(Node):
                 self._busy = False
 
     def _run_station_sequence(self, goal_handle, station_id: int):
-        profile = self._stations.get(station_id)
+        # Negative station_id = sub_goal phase only (approach leg).
+        # Positive/zero station_id = goal phase only (docking leg).
+        sub_goal_only = station_id < 0
+        real_id = abs(station_id)
+
+        profile = self._stations.get(real_id)
         if profile is None:
-            self.get_logger().error(f'Unknown station_id={station_id}')
+            self.get_logger().error(
+                f'Unknown station_id={station_id} (resolved={real_id})'
+            )
             return False, 'UNKNOWN_STATION'
+
+        if sub_goal_only:
+            sequence = [w for w in profile.sequence if w.endswith('_sub_goal')]
+            phase_label = 'sub_goal'
+        else:
+            sequence = [w for w in profile.sequence if not w.endswith('_sub_goal')]
+            phase_label = 'goal'
 
         self.get_logger().info(
             f'[STATION START] id={station_id}, name="{profile.name}", '
-            f'sequence={profile.sequence}'
+            f'phase={phase_label}, sequence={sequence}'
         )
+
+        if not sequence:
+            # No waypoints for this phase (e.g., station has no sub_goal).
+            self._publish_feedback(
+                goal_handle,
+                f'ARRIVED station={station_id} name={profile.name}',
+            )
+            return True, ''
 
         self._publish_feedback(
             goal_handle,
             f'MOVING station={station_id} name={profile.name}',
         )
 
-        for index, waypoint_name in enumerate(profile.sequence):
+        for index, waypoint_name in enumerate(sequence):
             if goal_handle.is_cancel_requested:
                 return False, 'CANCELED'
 
@@ -501,19 +665,21 @@ class RobocupNavigator(Node):
                 goal_handle,
                 waypoint_name,
                 index,
-                len(profile.sequence),
+                len(sequence),
             )
             if not ok:
                 return False, reason
 
-        if profile.post_process and self._approach_after_goal:
-            ok, reason = self._run_front_alignment(goal_handle, profile)
-            if not ok:
-                return False, reason
+        # Alignment and post-process are only needed at the final docking goal.
+        if not sub_goal_only:
+            if profile.post_process and self._approach_after_goal:
+                ok, reason = self._run_front_alignment(goal_handle, profile)
+                if not ok:
+                    return False, reason
 
-        self._pending_post_process_profile = (
-            profile if profile.post_process else None
-        )
+            self._pending_post_process_profile = (
+                profile if profile.post_process else None
+            )
 
         self._publish_feedback(
             goal_handle,
@@ -573,7 +739,9 @@ class RobocupNavigator(Node):
         if not self._follow_client.wait_for_server(
             timeout_sec=self._follow_server_timeout_sec
         ):
-            self.get_logger().error('FollowWaypoints action server unavailable.')
+            self.get_logger().error(
+                'FollowWaypoints action server unavailable.'
+            )
             return False, 'NAV_FAILED'
 
         self._publish_feedback(
@@ -720,11 +888,18 @@ class RobocupNavigator(Node):
                 return False, reason
 
         if self._rotate_after_backup:
-            ok, reason = self._run_rotation(None, profile)
+            waypoint_name = self._last_goal_waypoint(profile)
+            ok, reason = self._run_rotation(None, profile, waypoint_name)
             if not ok:
                 return False, reason
 
         return True, ''
+
+    def _last_goal_waypoint(self, profile: StationProfile):
+        for waypoint_name in reversed(profile.sequence):
+            if self._is_goal_waypoint(waypoint_name):
+                return waypoint_name
+        return None
 
     def _run_front_alignment(self, goal_handle, profile: StationProfile):
         self._publish_zero_velocity()
@@ -790,8 +965,12 @@ class RobocupNavigator(Node):
             self.get_logger().warn('Backup skipped: invalid distance/speed.')
             return True, ''
 
-        required_time = abs(self._backup_distance) / abs(self._backup_speed)
-        start = time.monotonic()
+        if not self._backup_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error(
+                '[BACKUP] BackUp action server unavailable — skipping.'
+            )
+            return True, ''
+
         self._publish_zero_velocity()
 
         if goal_handle is not None:
@@ -804,93 +983,173 @@ class RobocupNavigator(Node):
             f'speed={self._backup_speed:.3f} m/s'
         )
 
-        while rclpy.ok():
-            if goal_handle is not None and goal_handle.is_cancel_requested:
-                self._publish_zero_velocity()
-                return False, 'CANCELED'
+        backup_goal = BackUp.Goal()
+        backup_goal.target.x = float(self._backup_distance)
+        backup_goal.speed = float(self._backup_speed)
+        backup_goal.time_allowance = Duration(
+            sec=int(self._backup_timeout_sec)
+        )
 
-            elapsed = time.monotonic() - start
-            if elapsed >= required_time:
-                self.get_logger().info('[BACKUP DONE]')
-                self._publish_zero_velocity()
-                return True, ''
+        done = Event()
+        state = {'succeeded': False, 'exception': None}
 
-            if elapsed >= self._backup_timeout_sec:
+        def on_goal_response(future):
+            try:
+                gh = future.result()
+                if not gh.accepted:
+                    self.get_logger().warn('[BACKUP] Goal rejected.')
+                    done.set()
+                    return
+                gh.get_result_async().add_done_callback(on_result)
+            except Exception as exc:
+                state['exception'] = exc
+                done.set()
+
+        def on_result(future):
+            try:
+                wrapped = future.result()
+                state['succeeded'] = (
+                    wrapped.status == GoalStatus.STATUS_SUCCEEDED
+                )
+            except Exception as exc:
+                state['exception'] = exc
+            finally:
+                done.set()
+
+        send_future = self._backup_client.send_goal_async(backup_goal)
+        send_future.add_done_callback(on_goal_response)
+
+        deadline = time.monotonic() + self._backup_timeout_sec + 5.0
+        while not done.is_set():
+            if time.monotonic() >= deadline:
                 self.get_logger().warn('[BACKUP TIMEOUT]')
-                self._publish_zero_velocity()
                 return True, ''
-
-            cmd = Twist()
-            cmd.linear.x = -abs(self._backup_speed)
-            self._cmd_vel_pub.publish(cmd)
             time.sleep(self._motion_period_sec)
 
-        return False, 'NAV_FAILED'
-
-    def _run_rotation(self, goal_handle, profile: StationProfile):
-        if self._rotate_angle_rad <= 0.0 or self._rotate_angular_speed <= 0.0:
-            self.get_logger().warn('Rotation skipped: invalid angle/speed.')
+        if state['exception'] is not None:
+            self.get_logger().error(f'[BACKUP ERROR] {state["exception"]}')
             return True, ''
 
-        required_time = (
-            abs(self._rotate_angle_rad) / abs(self._rotate_angular_speed)
-        )
-        start = time.monotonic()
+        if not state['succeeded']:
+            self.get_logger().warn(
+                '[BACKUP] Action did not succeed (collision or aborted).'
+            )
+            return True, ''
+
+        self.get_logger().info('[BACKUP DONE]')
+        return True, ''
+
+    def _run_rotation(self, goal_handle, profile: StationProfile,
+                      waypoint_name: Optional[str]):
+        if not waypoint_name:
+            self.get_logger().info(
+                f'Rotation skipped: station={profile.station_id} has no '
+                'goal waypoint.'
+            )
+            return True, ''
+
+        rotation_profile = self._rotation_profiles.get(waypoint_name)
+        if rotation_profile is None:
+            self.get_logger().info(
+                f'Rotation skipped: no profile for waypoint={waypoint_name}.'
+            )
+            return True, ''
+
+        if (
+                rotation_profile.angle_rad <= 0.0
+                or self._rotate_angular_speed <= 0.0):
+            self.get_logger().warn(
+                f'Rotation skipped for {waypoint_name}: invalid angle/speed.'
+            )
+            return True, ''
+
+        if not self._spin_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error(
+                '[ROTATE] Spin action server unavailable — skipping.'
+            )
+            return True, ''
+
         self._publish_zero_velocity()
 
-        # ## 변경되는 부분
-        # YAML에서 읽은 rotate_direction에 따라 feedback/log 문구 변경
         direction_text = (
-            'ROTATING_RIGHT'
-            if self._rotate_direction == 'right'
-            else 'ROTATING_LEFT'
+            'ROTATING_CLOCKWISE'
+            if rotation_profile.direction == 'clockwise'
+            else 'ROTATING_COUNTERCLOCKWISE'
         )
 
         if goal_handle is not None:
             self._publish_feedback(
                 goal_handle,
                 f'{direction_text} station={profile.station_id} '
-                f'name={profile.name}',
+                f'name={profile.name} waypoint={waypoint_name}',
             )
 
-        # ## 변경되는 부분
-        # 회전 방향도 로그에 표시
         self.get_logger().info(
-            f'[ROTATE START] direction={self._rotate_direction}, '
-            f'angle={self._rotate_angle_deg:.1f} deg, '
-            f'angular_speed={self._rotate_angular_speed:.3f} rad/s'
+            f'[ROTATE START] waypoint={waypoint_name}, '
+            f'direction={rotation_profile.direction}, '
+            f'angle={rotation_profile.angle_deg:.1f} deg'
         )
 
-        while rclpy.ok():
-            if goal_handle is not None and goal_handle.is_cancel_requested:
-                self._publish_zero_velocity()
-                return False, 'CANCELED'
+        # Nav2 Spin: positive target_yaw = CCW, negative = CW
+        if rotation_profile.direction == 'clockwise':
+            target_yaw = -abs(rotation_profile.angle_rad)
+        else:
+            target_yaw = abs(rotation_profile.angle_rad)
 
-            elapsed = time.monotonic() - start
-            if elapsed >= required_time:
-                self.get_logger().info('[ROTATE DONE]')
-                self._publish_zero_velocity()
-                return True, ''
+        spin_goal = Nav2Spin.Goal()
+        spin_goal.target_yaw = float(target_yaw)
+        spin_goal.time_allowance = Duration(
+            sec=int(self._rotate_timeout_sec)
+        )
 
-            if elapsed >= self._rotate_timeout_sec:
+        done = Event()
+        state = {'succeeded': False, 'exception': None}
+
+        def on_goal_response(future):
+            try:
+                gh = future.result()
+                if not gh.accepted:
+                    self.get_logger().warn('[ROTATE] Goal rejected.')
+                    done.set()
+                    return
+                gh.get_result_async().add_done_callback(on_result)
+            except Exception as exc:
+                state['exception'] = exc
+                done.set()
+
+        def on_result(future):
+            try:
+                wrapped = future.result()
+                state['succeeded'] = (
+                    wrapped.status == GoalStatus.STATUS_SUCCEEDED
+                )
+            except Exception as exc:
+                state['exception'] = exc
+            finally:
+                done.set()
+
+        send_future = self._spin_client.send_goal_async(spin_goal)
+        send_future.add_done_callback(on_goal_response)
+
+        deadline = time.monotonic() + self._rotate_timeout_sec + 5.0
+        while not done.is_set():
+            if time.monotonic() >= deadline:
                 self.get_logger().warn('[ROTATE TIMEOUT]')
-                self._publish_zero_velocity()
                 return True, ''
-
-            cmd = Twist()
-
-            # ## 변경되는 부분
-            # cmd.angular.z > 0 : 왼쪽 회전
-            # cmd.angular.z < 0 : 오른쪽 회전
-            if self._rotate_direction == 'right':
-                cmd.angular.z = -abs(self._rotate_angular_speed)
-            else:
-                cmd.angular.z = abs(self._rotate_angular_speed)
-
-            self._cmd_vel_pub.publish(cmd)
             time.sleep(self._motion_period_sec)
 
-        return False, 'NAV_FAILED'
+        if state['exception'] is not None:
+            self.get_logger().error(f'[ROTATE ERROR] {state["exception"]}')
+            return True, ''
+
+        if not state['succeeded']:
+            self.get_logger().warn(
+                '[ROTATE] Spin action did not succeed (collision or aborted).'
+            )
+            return True, ''
+
+        self.get_logger().info('[ROTATE DONE]')
+        return True, ''
 
     def _scan_callback(self, msg: LaserScan):
         front_distance = self._get_front_distance(msg)

@@ -2,6 +2,35 @@
 
 목표는 Terminator를 `1 2 3 4 / 5 6 7 8` 구조로 열고, 각 창에서 ROS2 환경을 자동 소싱한 뒤 명령어를 입력줄에 미리 채워두는 것이다. 사용자는 명령어를 확인하거나 수정한 뒤 Enter를 눌러 실행한다.
 
+## 핵심 명령어
+
+```bash
+# 터미널 8개 실행, 로그 없음
+rs
+```
+
+```bash
+# 터미널 8개 실행, 로그 있음
+rsl
+```
+
+```bash
+# Terminator 설정 + rs/rsl alias 설치
+cd ~/ros2_ws
+./tools/terminator/install_terminator_config.sh
+```
+
+```bash
+# 현재 터미널에 alias 바로 적용
+source ~/.bashrc
+```
+
+```bash
+# 최신 로그 폴더 확인
+cd ~/ros2_ws
+ls -td logs/* | head -1
+```
+
 ## 파일 구성
 
 ```text
@@ -22,15 +51,18 @@ cd ~/ros2_ws
 ```
 
 이 방식은 `terminator -g tools/terminator/terminator_robocup_8pane.config -l robocup_8pane`로 실행된다.
+`ROBOCUP_ENABLE_LOGS=1`이 설정된 상태로 실행하면 `logs/YYYYMMDD_HHMM/` 폴더가 생성되고, 1번부터 8번 pane의 출력은 각각 `1.log`부터 `8.log`에 저장된다.
 
 ## 기본 Terminator 레이아웃으로 설치
 
-설치 후에는 `terminator -u -l robocup_8pane`로 실행한다. `-u`는 이미 떠 있는 Terminator 인스턴스를 재사용하지 않고 새 창으로 레이아웃을 열게 한다.
+설치 후에는 `rs` 또는 `rsl`로 실행한다. `rs`는 로그 없이 8개 pane을 띄우고, `rsl`은 같은 레이아웃을 로그 기록과 함께 띄운다.
 
 ```bash
 cd ~/ros2_ws
 ./tools/terminator/install_terminator_config.sh
-terminator -u -l robocup_8pane
+rs
+# 또는 로그 포함 실행
+rsl
 ```
 
 ## 다른 컴퓨터에 동일하게 설치
@@ -123,6 +155,25 @@ grep ros2_preset_prompt ~/.config/terminator/config
 | 6 | `ros2 run sml_system_pkg sml_manager_node` |
 | 7 | `ros2 run sml_system_pkg order_server` |
 | 8 | `ros2 topic list` |
+
+## 로그
+
+`./tools/terminator/open_robocup_terminator.sh`로 실행하면 시작 시각 기준으로 로그 폴더가 한 번 생성되고, `1.log`부터 `8.log`까지 먼저 만들어진다. 같은 분 안에 다시 실행해서 같은 이름의 폴더가 이미 있으면 `_2`, `_3`처럼 번호가 붙는다.
+
+```text
+logs/
+  20260629_1755/
+    1.log
+    2.log
+    3.log
+    4.log
+    5.log
+    6.log
+    7.log
+    8.log
+```
+
+각 로그 파일에는 해당 Terminator pane에서 실제 실행한 명령의 stdout/stderr가 함께 저장된다. 화면 출력은 기존처럼 표시된다.
 
 주의: 기존 문서의 `sml_planning_node`는 현재 `src/sml_system_pkg/setup.py`에 등록되어 있지 않다. 등록된 실행 파일은 `sml_planning_node_plan_a`, `sml_planning_node_plan_b`이며, 설정 기본값은 `plan_a`다.
 

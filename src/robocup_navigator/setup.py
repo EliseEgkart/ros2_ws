@@ -36,10 +36,6 @@ setup(
     entry_points={
         'console_scripts': [
             'robocup_navigator = robocup_navigator.navigator:main',
-            (
-                'robocup_navigator_origin = '
-                'robocup_navigator.navigator_origin:main'
-            ),
             'robocup_current_pose = robocup_navigator.current_pose:main',
             'waypoint_editor = robocup_navigator.waypoint_editor:main',
         ],

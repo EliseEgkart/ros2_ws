@@ -1,0 +1,47 @@
+robocup_planner:
+  ros__parameters:
+    task_topic: "/sml/task"
+    nav_action: "navigate_to_station"
+    wb_action: "wb_task"
+    arm_service: "/amr_robot_command"
+    wb_ready_topic: "/workbench/product_ready"
+    post_process_service: "/robocup_navigator/post_process"
+    driving_velocity: 0.5
+    parking_duration: 1.5
+    exiting_duration: 1.0
+    # Debug: export full plan result to JSON file before execution.
+    # Set debug_export_dir to an absolute path to override the default (/tmp/robocup_planner).
+    debug_export: true
+    debug_export_dir: "/home/st02/ros2_ws/logs/planner/"
+
+order_server:
+  ros__parameters:
+    task_topic: "/sml/task"
+    auto_publish: true
+    start_side: "a"
+    mode: "preset"
+    tier: "beginner"
+    stage: "production"
+
+mock_nav_node:
+  ros__parameters:
+    side: "a"
+    delay_sec: 1.0
+    use_distance_time: false
+    amr_speed_mps: 0.50
+    nav_overhead_sec: 0.0
+    post_process_delay_sec: 0.0
+
+mock_arm_node:
+  ros__parameters:
+    load_time_sec_per_item: 2.0
+    unload_time_sec_per_item: 2.0
+    amr_assemble_time_sec_per_connection: 4.0
+    amr_assemble_base_time_sec: 0.0
+    fallback_delay_sec: 0.5
+
+mock_wb_node:
+  ros__parameters:
+    produce_time_sec_per_connection: 5.0
+    recycle_time_sec_per_connection: 3.0
+    unknown_product_delay_sec: 0.5

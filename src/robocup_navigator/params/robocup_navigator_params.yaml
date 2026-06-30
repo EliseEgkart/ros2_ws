@@ -55,11 +55,11 @@ robocup_navigator:
     target_distance_tolerance: 0.01
 
     # 거리 정렬 중 linear.x에 적용할 속도 제한값.
-    approach_speed: 0.08
+    approach_speed: 0.20
     approach_min_speed: 0.05
 
     # 오차가 이 거리 안으로 들어오면 속도를 approach_min_speed 쪽으로 점진적으로 낮춘다.
-    approach_slowdown_distance: 0.15
+    approach_slowdown_distance: 0.07
     approach_timeout_sec: 12.0
 
     # false: 정렬 타임아웃을 치명적 오류로 보지 않고 다음 동작을 계속 수행한다.
@@ -74,7 +74,7 @@ robocup_navigator:
 
     # 스테이션에서 빠져나올 때 사용할 핵심 튜닝 값.
     backup_distance: 0.20
-    backup_speed: 0.14
+    backup_speed: 0.30
 
     backup_timeout_sec: 5.0
     backup_action_name: "backup"
@@ -93,7 +93,7 @@ robocup_navigator:
     #   recoveries_server.max_rotational_vel
     #   recoveries_server.min_rotational_vel
     #   recoveries_server.rotational_acc_lim
-    rotate_angular_speed: 1.4
+    rotate_angular_speed: 2.8
     rotate_timeout_sec: 8.0
 
     # navigator 액션 대기/폴링 루프에서 사용하는 sleep 주기.

@@ -18,7 +18,7 @@ def test_side_station_id_conversions():
     assert side_to_fixed_workbench_station('b') == 10
 
     # A side: IDs are passed through unchanged
-    a_ids = [0, 1, 2, 3, 4, 6, 7]
+    a_ids = [0, 1, 2, 3, 4, 6, 71]
     for sid in a_ids:
         assert amr_station_to_planner_station(sid, 'a') == sid
         assert planner_station_to_amr_station(sid, 'a') == sid
@@ -34,12 +34,12 @@ def test_station_types_match_arena_format():
     a_types = {a_id: station_type for _, a_id, _b_id, station_type in STATION_DEFS}
     b_types = {b_id: station_type for _, _a_id, b_id, station_type in STATION_DEFS}
 
-    assert {sid for sid, stype in a_types.items() if stype == Station.ST_STORAGE} == {1, 2, 7}
+    assert {sid for sid, stype in a_types.items() if stype == Station.ST_STORAGE} == {1, 2, 71}
     assert {sid for sid, stype in a_types.items() if stype == Station.ST_HYBRID} == {3}
     assert {sid for sid, stype in a_types.items() if stype == Station.ST_WORKBENCH} == {4}
     assert {sid for sid, stype in a_types.items() if stype == Station.ST_CUSTOMER} == {6}
 
-    assert {sid for sid, stype in b_types.items() if stype == Station.ST_STORAGE} == {12, 13, 7}
+    assert {sid for sid, stype in b_types.items() if stype == Station.ST_STORAGE} == {12, 13, 72}
     assert {sid for sid, stype in b_types.items() if stype == Station.ST_HYBRID} == {11}
     assert {sid for sid, stype in b_types.items() if stype == Station.ST_WORKBENCH} == {10}
     assert {sid for sid, stype in b_types.items() if stype == Station.ST_CUSTOMER} == {8}

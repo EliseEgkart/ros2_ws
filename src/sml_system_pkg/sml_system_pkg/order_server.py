@@ -114,9 +114,10 @@ PRODUCT_NAME_TO_ID = {
 
 # ─────────────────────────────────────────────────────────────
 # Station naming / real ID mapping
-#   A station IDs: 1(storage), 2(storage), 3(hybrid), 4(workbench), 6(customer), 7(shared storage)
-#   B station IDs: 12(storage), 13(storage), 11(hybrid), 10(workbench), 8(customer), 7(shared storage)
+#   A station IDs: 1(storage), 2(storage), 3(hybrid), 4(workbench), 6(customer), 71(shared storage A-side)
+#   B station IDs: 12(storage), 13(storage), 11(hybrid), 10(workbench), 8(customer), 72(shared storage B-side)
 #   start/goal: A=0, B=14
+#   IDs 5, 9 are reserved.  71/72 = same physical shelf approached from A/B side respectively.
 # ─────────────────────────────────────────────────────────────
 STATION_DEFS = [
     ("storage_1",      1,  12, ST_STORAGE),
@@ -124,7 +125,7 @@ STATION_DEFS = [
     ("hybrid_1",       3,  11, ST_HYBRID),
     ("workbench_1",    4,  10, ST_WORKBENCH),
     ("customer_1",     6,   8, ST_CUSTOMER),
-    ("shared_storage", 7,   7, ST_STORAGE),
+    ("shared_storage", 71, 72, ST_STORAGE),
 ]
 
 STATION_COUNT = 6

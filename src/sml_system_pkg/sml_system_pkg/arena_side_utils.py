@@ -4,17 +4,18 @@ SIDE_A_START_GOAL = 0
 SIDE_B_START_GOAL = 14
 
 # New ID mapping (non-offset; lookup table required):
-#   A side: 0(goal), 1(storage), 2(storage), 3(hybrid), 4(workbench), 6(customer), 7(shared storage)
-#   B side: 14(goal), 12(storage), 13(storage), 11(hybrid), 10(workbench), 8(customer), 7(shared storage)
+#   A side: 0(goal), 1(storage), 2(storage), 3(hybrid), 4(workbench), 6(customer), 71(shared storage A-side)
+#   B side: 14(goal), 12(storage), 13(storage), 11(hybrid), 10(workbench), 8(customer), 72(shared storage B-side)
+#   IDs 5, 9 are reserved.  71/72 = same physical shelf, approached from A/B side respectively.
 
 _B_TO_A: dict = {
-    14: 0,   # goal
-    12: 1,   # storage_1
-    13: 2,   # storage_2
-    11: 3,   # hybrid_1
-    10: 4,   # workbench_1
-    8:  6,   # customer_1
-    7:  7,   # shared_storage
+    14: 0,    # goal
+    12: 1,    # storage_1
+    13: 2,    # storage_2
+    11: 3,    # hybrid_1
+    10: 4,    # workbench_1
+    8:  6,    # customer_1
+    72: 71,   # shared_storage (B-side approach → A-side approach)
 }
 _A_TO_B: dict = {v: k for k, v in _B_TO_A.items()}
 

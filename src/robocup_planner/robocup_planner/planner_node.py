@@ -164,6 +164,17 @@ class PlannerNode(Node):
     # Task callback — triggers planning + execution
     # ------------------------------------------------------------------
 
+    def _remap_shared_stations(self, msg: Task) -> Task:
+        """주최 referee box가 공유 선반을 station_id=7로 보낼 경우 side에 따라 71(A)/72(B)로 변환."""
+        shared_id = 72 if self._side == 'b' else 71
+        for station in msg.arena_layout:
+            if station.station_id == 7:
+                station.station_id = shared_id
+                self.get_logger().info(
+                    f"Remapped shared storage station_id 7 → {shared_id} (side={self._side})"
+                )
+        return msg
+
     def _on_task(self, msg: Task) -> None:
         with self._exec_lock:
             if self._executor_thread and self._executor_thread.is_alive():
@@ -172,6 +183,7 @@ class PlannerNode(Node):
                 )
                 return
 
+        msg = self._remap_shared_stations(msg)
         self.get_logger().info("Task received — planning...")
         try:
             plan = self._plan(msg)

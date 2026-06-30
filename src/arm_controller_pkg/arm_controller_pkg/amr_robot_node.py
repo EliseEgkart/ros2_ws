@@ -93,14 +93,6 @@ DELIVERY_WAYPOINTS = {
     ],
 }
 
-# 완성품 unload 후 비전 검증용 조인트 포인트.
-# 실제 카메라가 내려놓은 완성품을 위에서 볼 수 있는 자세로 교체해서 사용한다.
-PRODUCT_VERIFY_WAYPOINTS = {
-    6: [
-        np.array([-61.89, 12.56, 94.17, 0, 73.27, 28.11]),
-    ],
-}
-
 # 완성품 층 그룹 — delivery 시 내려놓는 높이(z)가 그룹별로 다르다.
 PRODUCT_FLOOR_1   = {34, 13, 81}               # 1층:   배터리, 마그넷, 이스탑
 PRODUCT_FLOOR_2_5 = {442, 241, 462, 8518}      # 2층반: 당근, 신호등, 스몰트리, 버거
@@ -116,10 +108,6 @@ FINISHED_PRODUCTS = PRODUCT_FLOOR_1 | PRODUCT_FLOOR_2_5 | PRODUCT_FLOOR_2
 PRODUCT_DELIVERY_IDX = 6
 PRODUCT_SLOT = 1  # 완제품 보관 슬롯 → 언로드 시 항상 PRODUCT_DELIVERY_IDX로 고정
 
-# Official workbench station ids. Used to distinguish product unloads to the
-# workbench from customer deliveries.
-WORKBENCH_STATION_IDS = {3, 6, 7, 12, 15, 16}
-
 # --- LOAD 비전/오프셋 상수 ---
 CAM_X_OFF = -51.0
 CAM_Y_OFF = 32.0
@@ -132,8 +120,6 @@ SCAN_Y_AXIS_INDEX = 1
 SCAN_SETTLE_TIME_SEC = 0.3
 SCAN_VISION_RETRIES_PER_POSE = 1
 SCAN_MAX_CYCLES = 3
-PRODUCT_VERIFY_SETTLE_TIME_SEC = 0.3
-PRODUCT_VERIFY_VISION_RETRIES = 1
 # 파지(grip) 직전, 이동 정지 후 기계 진동이 잦아들 시간(초). 최소값으로 잡음.
 # 0 에 가까울수록 빠르지만, 흔들리는 중에 잡으면 파지 실패 위험 -> 0.05~0.1 권장.
 GRIP_SETTLE_TIME_SEC = 0.1
@@ -192,7 +178,7 @@ def get_pick_offset(object_id):
     off.update(PICK_OFFSET.get(object_id, {}))
     return off
 
-# --- UNLOAD Z 상수 (슬롯에서 물체 집을 때, 슬롯 2~6) ---
+# --- UNLOAD Z 상수 (슬롯에서 물체 집을 때, 슬롯 2~6) --q   -
 UNLOAD_Z_DOWN_MM = 70.0
 UNLOAD_Z_UP_MM = -70.0
 
@@ -741,37 +727,6 @@ class AmrRobotNode(Node):
         self.get_logger().info(f'[AMR] returned from delivery position {delivery_idx}')
         return True
 
-    def move_to_product_verify(self):
-        waypoints = PRODUCT_VERIFY_WAYPOINTS.get(PRODUCT_DELIVERY_IDX)
-        if waypoints is None:
-            self.get_logger().error('[AMR] no product verification waypoints')
-            return False
-
-        for idx, wp in enumerate(waypoints, start=1):
-            if not self.move_j_checked(wp, label=f'move_to_product_verify wp{idx}'):
-                return False
-
-        self.get_logger().info('[AMR] product verification position reached')
-        return True
-
-    def verify_product_unload(self, object_id):
-        if not self.move_to_product_verify():
-            return False
-
-        time.sleep(PRODUCT_VERIFY_SETTLE_TIME_SEC)
-        res = self.call_vision(str(object_id), retries=PRODUCT_VERIFY_VISION_RETRIES)
-
-        if res and res.success:
-            self.get_logger().info(
-                f'[UNLOAD VERIFY] object_id={object_id} detected at workbench; treat as success'
-            )
-            return True
-
-        self.get_logger().error(
-            f'[UNLOAD VERIFY] object_id={object_id} not detected at workbench; treat as fail'
-        )
-        return False
-
     def pick_from_floor_by_vision(self, object_id, label_prefix='pick'):
         vision_target = str(object_id)
 
@@ -879,100 +834,6 @@ class AmrRobotNode(Node):
 
         return True
 
-    def retry_product_unload_recovery(self, object_id):
-        self.get_logger().warn(
-            f'[UNLOAD VERIFY] recovery start: object_id={object_id}'
-        )
-
-        # 1. 검증 위치에서 바로 비전 탐색 후 파지 (yaw 먼저 돌리는 복구 전용 픽업)
-        if not self.recovery_pick_by_vision(object_id, label_prefix='recovery'):
-            return False
-
-        # 2. 바로 배송 위치로 이동 및 하역
-        if not self.place_at_delivery(
-            object_id,
-            PRODUCT_DELIVERY_IDX,
-            is_product=True,
-        ):
-            return False
-
-        return True
-    
-    def recovery_pick_by_vision(self, object_id, label_prefix='recovery'):
-
-        vision_target = str(object_id)
-
-        # 1. 그리퍼 열기
-        if not self.call_gripper(False):
-            return False
-
-        # 2. 비전 탐색
-        p = self.call_vision_with_y_scan(vision_target)
-        if not p:
-            self.get_logger().error(f'[AMR] vision failed during {label_prefix}')
-            return False
-
-        # 3. 좌표 및 오프셋 계산
-        off = get_pick_offset(object_id)
-        dx = -(p.x * 1000.0) + CAM_Y_OFF
-        dy = (p.y * 1000.0) + CAM_X_OFF
-        z_move = (p.z * 1000.0) + Z_OFFSET
-        yaw = p.yaw
-
-        tool_x = dy + off['x']
-        tool_y = dx + off['y']
-        tool_z = (z_move - Z_MARGIN) + off['z']
-
-        if any(off[k] != 0.0 for k in ('x', 'y', 'z')):
-            self.get_logger().info(
-                f'[AMR] {label_prefix} offset applied: object_id={object_id}, '
-                f'off={off}, vision_yaw(raw)={p.yaw:.2f}'
-            )
-
-        # 4. yaw 회전 선행
-        if not self.move_l_rel_checked(
-            [0.0, 0.0, 0.0, 0.0, 0.0, yaw],
-            label=f'{label_prefix} yaw approach first',
-        ):
-            return False
-
-        # Tool 좌표계가 yaw만큼 돌아갔으므로, 기존 카메라 기준의 x, y 이동량도 회전 변환 적용
-        yaw_rad = np.radians(yaw)
-        adj_tool_x = tool_x * np.cos(yaw_rad) + tool_y * np.sin(yaw_rad)
-        adj_tool_y = -tool_x * np.sin(yaw_rad) + tool_y * np.cos(yaw_rad)
-
-        # 5. 보정된 x, y, z(안전 마진까지) 대각선 하강
-        if not self.move_l_rel_checked(
-            [adj_tool_x, adj_tool_y, tool_z, 0.0, 0.0, 0.0],
-            label=f'{label_prefix} xy+z approach',
-        ):
-            return False
-        # 6. 최종 수직 하강
-        if not self.move_l_rel_checked(
-            [0.0, 0.0, Z_MARGIN, 0.0, 0.0, 0.0],
-            label=f'{label_prefix} z final approach',
-        ):
-            return False
-        time.sleep(GRIP_SETTLE_TIME_SEC)
-
-        # 7. 그리퍼 닫기 (파지)
-        if not self.call_gripper(True):
-            self.get_logger().error(f'[AMR] {label_prefix} grip failed')
-            self.move_l_rel_checked(
-                [0.0, 0.0, -Z_MARGIN, 0.0, 0.0, 0.0],
-                label=f'{label_prefix} retreat after grip failure',
-            )
-            return False
-
-        # 8. 위로 들어 올리기 (Lift)
-        if not self.move_l_rel_checked(
-            [0.0, 0.0, -50.0, 0.0, 0.0, 0.0],
-            label=f'{label_prefix} lift after grip',
-        ):
-            return False
-
-        return True
-
     # --- 서비스 콜백 (LOAD / UNLOAD 분기) ---
 
     def arm_robot_command_cb(self, request, response):
@@ -1002,7 +863,7 @@ class AmrRobotNode(Node):
                 results = self.sequence_load_multi(list(request.object_ids))
             elif action == 'UNLOAD':
                 results = self.sequence_unload_multi(
-                    list(request.object_ids), request.station_id)
+                    list(request.object_ids))
             else:
                 results = self.sequence_assemble_multi(
                     list(request.object_ids), request.station_id)
@@ -1262,10 +1123,10 @@ class AmrRobotNode(Node):
 
     # --- UNLOAD 시퀀스 ---
 
-    def sequence_unload_multi(self, object_ids, station_id=0):
+    def sequence_unload_multi(self, object_ids):
         results = []
         for idx, object_id in enumerate(object_ids):
-            result = self.sequence_unload(object_id, idx, station_id=station_id)
+            result = self.sequence_unload(object_id, idx)
             results.append(result)
             if not result['success']:
                 self.get_logger().error(f'[AMR] unload failed at object_id={object_id}, stopping')
@@ -1274,7 +1135,7 @@ class AmrRobotNode(Node):
         self.go_moving_pose()
         return results
 
-    def sequence_unload(self, object_id, delivery_idx, station_id=0):
+    def sequence_unload(self, object_id, delivery_idx):
         if not self.is_robot_ready():
             return {
                 'success': False,
@@ -1416,25 +1277,6 @@ class AmrRobotNode(Node):
                 'object_id': object_id,
                 'message': 'delivery placement failed',
             }
-
-        if is_product and station_id in WORKBENCH_STATION_IDS and not self.verify_product_unload(object_id):
-            if not self.retry_product_unload_recovery(object_id):
-                self.go_home()
-                return {
-                    'success': False,
-                    'slot': slot,
-                    'object_id': object_id,
-                    'message': 'product unload recovery failed',
-                }
-
-            if not self.verify_product_unload(object_id):
-                self.go_home()
-                return {
-                    'success': False,
-                    'slot': slot,
-                    'object_id': object_id,
-                    'message': 'product unload verification failed after recovery',
-                }
 
         # 11. 웨이포인트 역순으로 홈 복귀
         if not self.return_from_delivery(target_delivery_idx):

@@ -136,6 +136,7 @@ class PlannerNode(Node):
 
         self._cargo = CargoManager()
         self._cargo_lock = threading.Lock()
+        self._last_navigated_station: Optional[int] = None
 
         # --- ROS interfaces ---
         self._task_sub = self.create_subscription(
@@ -284,6 +285,23 @@ class PlannerNode(Node):
             f"Selected workbench station {workbench_station_id} "
             f"from candidates {workbench_station_ids}"
         )
+
+        # Warn when a Hybrid station is chosen as the workbench.
+        # Hybrid stations double as storage shelves; visiting them for workbench
+        # operations (recycle / overflow) when no such work exists is wasteful.
+        hybrid_station_ids = {
+            int(st.station_id)
+            for st in msg.arena_layout
+            if st.station_type == StationMsg.ST_HYBRID
+        }
+        if workbench_station_id in hybrid_station_ids:
+            if not recycle_ids:
+                self.get_logger().warning(
+                    f"[PLAN] Workbench {workbench_station_id} is a Hybrid shelf "
+                    "but there are NO recycle orders. "
+                    "It will only be visited if cargo overflows — "
+                    "consider whether a dedicated workbench (4 or 10) is available."
+                )
 
         if self._debug_export:
             _dbg['input'] = {
@@ -596,6 +614,8 @@ class PlannerNode(Node):
 
         if not success_holder[0]:
             self.get_logger().error(f"Navigation to station {station_id} failed")
+        else:
+            self._last_navigated_station = abs(station_id)
         return success_holder[0]
 
     def call_post_process(self) -> bool:
@@ -804,6 +824,10 @@ class PlannerNode(Node):
             location=station_id,
             station_id=station_id,
         )
+
+    def get_current_station_id(self) -> Optional[int]:
+        """Return the station_id of the last successfully completed navigation, or None."""
+        return self._last_navigated_station
 
     def arm_deliver(self, product_id: int, from_cargo_id: int = 0) -> bool:
         """Deliver a finished product to the customer counter.

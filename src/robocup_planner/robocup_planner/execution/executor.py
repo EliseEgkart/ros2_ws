@@ -85,6 +85,9 @@ class Executor:
         # Final delivery of anything remaining
         self._deliver_all()
 
+        # Return to home station (0 for A-side, 14 for B-side)
+        self._return_to_home()
+
         self._log("Executor finished")
 
     # ------------------------------------------------------------------
@@ -264,6 +267,27 @@ class Executor:
                 self._start_ready_intransit_assembly()
 
         self._node.call_post_process()
+
+    # ------------------------------------------------------------------
+    # Return to home
+    # ------------------------------------------------------------------
+
+    def _return_to_home(self) -> None:
+        """Navigate back to the home station (0 for A-side, 14 for B-side)."""
+        home_id = self._plan.home_station_id
+        self._log(f"Returning to home station {home_id}")
+        self._node.navigate_subgoal(home_id)
+        self._wait_for_intransit_assembly()
+        self._node.navigate_goal(home_id)
+        self._log(f"Arrived at home station {home_id} — mission complete")
+        current = self._node.get_current_station_id()
+        if current is not None and current != home_id:
+            self._node.get_logger().error(
+                f"[Executor] Home verification FAILED: "
+                f"expected station {home_id}, navigator reports {current}"
+            )
+        else:
+            self._log(f"Home verification OK: at station {home_id}")
 
     # ------------------------------------------------------------------
     # Utility

@@ -167,13 +167,17 @@ class PlannerCore:
         self._append_deferred_waste_returns(station_info)
 
         if self.steps:
+            goal_station = int(self.config.station_start_goal)
             self._add_step(
                 Step.AMR,
                 Step.GOAL,
                 [],
-                STATION_START_GOAL,
+                goal_station,
                 [s.step_id for s in self.steps],
                 [],
+            )
+            self.get_logger().info(
+                f'[GOAL] 최종 홈 복귀 스텝 추가: station {goal_station}'
             )
 
         self.get_logger().info(f'Plan D 계획 생성 완료: {len(self.steps)}개 스텝')

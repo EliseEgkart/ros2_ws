@@ -119,7 +119,7 @@ waypoints:
       y: 0.0
       z: 0.999909
       w: 0.01351
-  station_7_sub_goal:
+  station_72_sub_goal:
     position:
       x: 2.0
       y: -0.2
@@ -129,7 +129,7 @@ waypoints:
       y: 0.0
       z: 0.707107
       w: 0.707107
-  station_7_goal:
+  station_72_goal:
     position:
       x: 2.0
       y: 0.3
@@ -269,6 +269,26 @@ waypoints:
       y: 0.0
       z: 1.0
       w: 0.0
+  station_71_sub_goal:
+    position:
+      x: 0.234097
+      y: 1.579375
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: -0.99988
+      w: 0.015522
+  station_71_goal:
+    position:
+      x: -1.163472
+      y: 1.535972
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: -0.999879
+      w: 0.015524
 sequence:
 - station_1_sub_goal
 - station_1_goal
@@ -282,8 +302,8 @@ sequence:
 - station_5_goal
 - station_6_sub_goal
 - station_6_goal
-- station_7_sub_goal
-- station_7_goal
+- station_72_sub_goal
+- station_72_goal
 - station_8_sub_goal
 - station_8_goal
 - station_9_sub_goal
@@ -297,6 +317,8 @@ sequence:
 - station_13_sub_goal
 - station_13_goal
 - station_14_goal
+- station_71_sub_goal
+- station_71_goal
 frame_id: map
 stations:
   0:
@@ -350,8 +372,8 @@ stations:
   7:
     name: station_7
     sequence:
-    - station_7_sub_goal
-    - station_7_goal
+    - station_72_sub_goal
+    - station_72_goal
     post_process: true
   8:
     name: station_8
@@ -418,4 +440,16 @@ stations:
   20:
     name: station_20
     sequence: []
+    post_process: true
+  71:
+    name: station_71
+    sequence:
+    - station_71_sub_goal
+    - station_71_goal
+    post_process: true
+  72:
+    name: station_72
+    sequence:
+    - station_72_sub_goal
+    - station_72_goal
     post_process: true

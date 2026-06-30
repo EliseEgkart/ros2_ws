@@ -6,8 +6,8 @@
 
 주요 정책
 - station_name은 공식 이름(side_a_storage_1 등)을 유지한다.
-- 선택한 start_side에 따라 A면 station_id 1~8, B면 station_id 10~17로 발행한다.
-- start/goal은 A면 0, B면 9이다.
+- 선택한 start_side에 따라 A면 station_id 1,2,3,4,6,7 / B면 station_id 7,8,10,11,12,13으로 발행한다.
+- start/goal은 A면 0, B면 14이다.
 - 공식 Beginner preset의 batch ID(10, 30, 40 등)는 그대로 유지한다.
 - 랜덤 모드에서도 같은 원재료 2개를 batch로 임의 압축하지 않는다.
 - batch는 arena_layout에 들어갈 수 있고, planner가 raw 단위로 해석해야 한다.
@@ -114,21 +114,20 @@ PRODUCT_NAME_TO_ID = {
 
 # ─────────────────────────────────────────────────────────────
 # Station naming / real ID mapping
-#   A station: 1~8, start/goal: 0
-#   B station: 10~17, start/goal: 9
+#   A station IDs: 1(storage), 2(storage), 3(hybrid), 4(workbench), 6(customer), 7(shared storage)
+#   B station IDs: 12(storage), 13(storage), 11(hybrid), 10(workbench), 8(customer), 7(shared storage)
+#   start/goal: A=0, B=14
 # ─────────────────────────────────────────────────────────────
 STATION_DEFS = [
-    ("storage_1", 1, 10, ST_STORAGE),
-    ("storage_2", 2, 11, ST_STORAGE),
-    ("workbench_1", 3, 12, ST_WORKBENCH),
-    ("storage_3", 4, 13, ST_STORAGE),
-    ("storage_4", 5, 14, ST_STORAGE),
-    ("workbench_2", 6, 15, ST_WORKBENCH),
-    ("workbench_3", 7, 16, ST_WORKBENCH),
-    ("customer_1", 8, 17, ST_CUSTOMER),
+    ("storage_1",      1,  12, ST_STORAGE),
+    ("storage_2",      2,  13, ST_STORAGE),
+    ("hybrid_1",       3,  11, ST_HYBRID),
+    ("workbench_1",    4,  10, ST_WORKBENCH),
+    ("customer_1",     6,   8, ST_CUSTOMER),
+    ("shared_storage", 7,   7, ST_STORAGE),
 ]
 
-STATION_COUNT = 8
+STATION_COUNT = 6
 
 
 def normalize_side(side: str) -> str:
@@ -197,10 +196,10 @@ def build_production_beginner_task(start_side: str) -> Task:
         {
             "side_a_storage_1": [2, 1],
             "side_a_storage_2": [8],
-            "side_a_storage_3": [40],
+            "side_a_hybrid_1": [40],
             "side_b_storage_1": [2, 1],
             "side_b_storage_2": [8],
-            "side_b_storage_3": [40],
+            "side_b_hybrid_1": [40],
         },
         start_side,
     )
@@ -215,11 +214,11 @@ def build_recycling_beginner_task(start_side: str) -> Task:
         orders,
         {
             "side_a_storage_1": [1, 3],
-            "side_a_storage_3": [4],
-            "side_a_storage_4": [2],
+            "side_a_hybrid_1": [4],
+            "side_a_shared_storage": [2],
             "side_b_storage_1": [1, 3],
-            "side_b_storage_3": [4],
-            "side_b_storage_4": [2],
+            "side_b_hybrid_1": [4],
+            "side_b_shared_storage": [2],
         },
         start_side,
     )
@@ -238,13 +237,13 @@ def build_lifecycle_beginner_task(start_side: str) -> Task:
         {
             "side_a_storage_1": [10, 2],
             "side_a_storage_2": [4, 30],
-            "side_a_storage_3": [6],
-            "side_a_storage_4": [7],
+            "side_a_hybrid_1": [6],
+            "side_a_shared_storage": [7],
             "side_a_customer_1": [34, 442],
             "side_b_storage_1": [10, 2],
             "side_b_storage_2": [4, 30],
-            "side_b_storage_3": [6],
-            "side_b_storage_4": [7],
+            "side_b_hybrid_1": [6],
+            "side_b_shared_storage": [7],
             "side_b_customer_1": [34, 442],
         },
         start_side,
@@ -622,12 +621,12 @@ class OrderServer(Node):
         prefix = side_prefix(self.start_side)
         material_map: Dict[str, List[int]] = {}
 
-        # storage_1~4를 재료 공급 후보로 사용한다.
+        # storage_1, storage_2, hybrid_1, shared_storage를 재료 공급 후보로 사용한다.
         supply_station_names = [
             f"{prefix}_storage_1",
             f"{prefix}_storage_2",
-            f"{prefix}_storage_3",
-            f"{prefix}_storage_4",
+            f"{prefix}_hybrid_1",
+            f"{prefix}_shared_storage",
         ]
         buckets = split_round_robin(storage_materials, len(supply_station_names))
         for name, bucket in zip(supply_station_names, buckets):

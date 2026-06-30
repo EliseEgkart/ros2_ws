@@ -2,53 +2,52 @@
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+
 from arm_interfaces.srv import GetTargetPose
 from vision_pkg.vision_6d_manager import (
+    BRICK_IDS,
+    COMPONENT_IDS,
     COMP_MODEL_PATH,
     DET_MODEL_PATH,
+    ID_TO_CLASS,
     SEG_MODEL_PATH,
     Vision6DPoseManager,
 )
+
 
 class VisionNode(Node):
     def __init__(self):
         super().__init__('vision_node')
         self.srv = self.create_service(GetTargetPose, '/get_target_pose', self.get_pose_cb)
-        self.get_logger().info('[VISION] loading 6D ensemble vision manager')
+        self.get_logger().info('[VISION] loading vision manager')
 
         self.declare_parameter('det_model_path', DET_MODEL_PATH)
         self.declare_parameter('seg_model_path', SEG_MODEL_PATH)
         self.declare_parameter('comp_model_path', COMP_MODEL_PATH)
-        self.declare_parameter('visualize', False)
-        self.declare_parameter('visualize_window', '6D Pose (Ensemble Mode)')
+        self.declare_parameter('visualize_window', '6D Pose Service Result')
         self.declare_parameter('visualize_scale', 2.0)
-        self.declare_parameter('live_view', True)
-        self.declare_parameter('live_target_id', 0)
-        self.declare_parameter('live_view_period_sec', 0.15)
+        self.declare_parameter('service_visualize', True)
+        self.declare_parameter('service_result_display_sec', 5.0)
         self.declare_parameter('use_shape_ratio_filter', True)
         self.declare_parameter('shape_ratio_threshold', 1.5)
         self.declare_parameter('edge_contact_max_px', 10)
         self.declare_parameter('edge_contact_margin_px', 2)
         self.declare_parameter('use_depth_median_filter', True)
-        self.declare_parameter('depth_median_margin_m', 0.01)
+        self.declare_parameter('depth_median_margin_m', 0.001)
         self.declare_parameter('depth_median_min_samples', 2)
 
         self.vision = None
         self.init_error = None
-        self.live_view_timer = None
-        # q/ESC 또는 Ctrl+C 종료 요청은 callback 안에서 rclpy.shutdown()을 바로 호출하지 않고,
-        # main()의 spin_once 루프가 이 플래그를 보고 빠져나가도록 한다.
         self.shutdown_requested = False
+
         try:
             self.vision = Vision6DPoseManager(
                 logger=self.get_logger(),
                 det_model_path=self.get_parameter('det_model_path').value,
                 seg_model_path=self.get_parameter('seg_model_path').value,
                 comp_model_path=self.get_parameter('comp_model_path').value,
-                visualize=(
-                    bool(self.get_parameter('visualize').value) or
-                    bool(self.get_parameter('live_view').value)
-                ),
+                # 서비스 함수에서 visualize 인자를 직접 넘기므로 여기 값은 내부 디버그 기본값 정도로만 사용된다.
+                visualize=bool(self.get_parameter('service_visualize').value),
                 visualize_window=self.get_parameter('visualize_window').value,
                 visualize_scale=float(self.get_parameter('visualize_scale').value),
                 use_shape_ratio_filter=bool(self.get_parameter('use_shape_ratio_filter').value),
@@ -59,140 +58,93 @@ class VisionNode(Node):
                 depth_median_margin_m=float(self.get_parameter('depth_median_margin_m').value),
                 depth_median_min_samples=int(self.get_parameter('depth_median_min_samples').value),
             )
-            self.get_logger().info('[VISION] vision_node started (6D ensemble based)')
-            if bool(self.get_parameter('live_view').value):
-                period_sec = max(
-                    0.03,
-                    float(self.get_parameter('live_view_period_sec').value),
-                )
-                self.live_view_timer = self.create_timer(period_sec, self.live_view_cb)
-                self.get_logger().info(
-                    f'[VISION] live view enabled '
-                    f'(target_id={self.get_parameter("live_target_id").value}, '
-                    f'period={period_sec:.2f}s)'
-                )
+            self.get_logger().info('[VISION] vision_node started - service branch mode')
+            self.get_logger().info('[VISION] service IDs: brick=1~8, component=13/34/81/241/442/462/711/4482/8518/46262/48132')
         except Exception as e:
             self.init_error = str(e)
-            self.get_logger().error(f'[VISION] 6D ensemble init failed: {e}')
-
-    def live_view_cb(self):
-        if self.vision is None:
-            return
-
-        try:
-            if getattr(self.vision, 'stop_requested', False):
-                self.request_shutdown('[VISION] stop requested before live frame')
-                return
-
-            self.vision.show_live_frame(
-                target_id=int(self.get_parameter('live_target_id').value)
-            )
-
-            if getattr(self.vision, 'stop_requested', False):
-                self.request_shutdown('[VISION] q/ESC pressed in OpenCV window')
-        except Exception as e:
-            self.get_logger().warn(f'[VISION] live view frame skipped: {e}')
-
-    def request_shutdown(self, reason):
-        """Request node shutdown without calling rclpy.shutdown() inside a callback.
-
-        Calling rclpy.shutdown() directly inside a ROS2 timer/service callback can
-        leave OpenCV HighGUI, RealSense, and the executor in an awkward state.
-        Instead, set a flag and let main() exit its spin_once loop. The actual
-        camera/window cleanup happens in destroy_node().
-        """
-        if not self.shutdown_requested:
-            self.get_logger().info(reason)
-        self.shutdown_requested = True
-
-        if self.live_view_timer is not None:
-            try:
-                self.live_view_timer.cancel()
-            except Exception:
-                pass
-            self.live_view_timer = None
-
-        if self.vision is not None:
-            self.vision.stop_requested = True
+            self.get_logger().error(f'[VISION] init failed: {e}')
 
     def get_pose_cb(self, request, response):
         target_str = request.target_color.strip()
-        self.get_logger().info(f'[VISION] 서비스 요청 수신 - target ID: {target_str}')
+        self.get_logger().info(f'[VISION] service request target ID: {target_str}')
 
         try:
             if self.vision is None:
                 response.success = False
-                self.get_logger().error(
-                    f'[VISION] unavailable: 6D ensemble init failed: {self.init_error}'
-                )
+                self.get_logger().error(f'[VISION] unavailable: init failed: {self.init_error}')
                 return response
 
             if not target_str.isdigit():
-                self.get_logger().error(
-                    f'[VISION] 잘못된 입력입니다. 숫자 ID를 입력하세요: {target_str}'
-                )
+                self.get_logger().error(f'[VISION] invalid input, expected numeric ID: {target_str}')
                 response.success = False
                 return response
 
             target_id = int(target_str)
+            wait_ms = int(max(0.0, float(self.get_parameter('service_result_display_sec').value)) * 1000.0)
+            service_visualize = bool(self.get_parameter('service_visualize').value)
 
-            if getattr(self.vision, 'stop_requested', False):
+            if target_id in BRICK_IDS:
+                self.get_logger().info(
+                    f'[VISION] branch=BRICK single-frame pipeline, ID={target_id}, class={ID_TO_CLASS.get(target_id)}'
+                )
+                result = self.vision.run_single_frame_brick_by_id(
+                    target_id=target_id,
+                    visualize=service_visualize,
+                    wait_ms=wait_ms,
+                )
+            elif target_id in COMPONENT_IDS:
+                self.get_logger().info(
+                    f'[VISION] branch=COMPONENT single-frame 777-style axis pipeline, ID={target_id}, class={ID_TO_CLASS.get(target_id)}'
+                )
+                result = self.vision.run_single_frame_component_by_id(
+                    target_id=target_id,
+                    visualize=service_visualize,
+                    wait_ms=wait_ms,
+                )
+            else:
+                self.get_logger().error(f'[VISION] unsupported service target ID: {target_id}')
                 response.success = False
-                self.get_logger().warn('[VISION] stop requested; refusing new service call')
                 return response
-
-            result = self.vision.run_pipeline_by_id(target_id=target_id)
 
             if getattr(self.vision, 'stop_requested', False):
                 self.request_shutdown('[VISION] q/ESC pressed during service visualization')
 
             if result.success:
                 response.success = True
-
-                # 6D manager already returns ROS-facing units: m, deg.
                 response.x = float(result.x_m)
                 response.y = float(result.y_m)
                 response.z = float(result.z_m)
                 response.yaw = float(result.yaw_deg)
                 response.class_name = str(result.class_name)
-
                 self.get_logger().info(
-                    f'[VISION] 타겟 발견! '
-                    f'ID={result.target_id}, '
-                    f'Class={result.class_name}, '
-                    f'X={result.x_m * 1000.0:.1f}mm, '
-                    f'Y={result.y_m * 1000.0:.1f}mm, '
-                    f'Z={result.z_m * 1000.0:.1f}mm, '
-                    f'Yaw={result.yaw_deg:.2f}deg'
+                    f'[VISION] target found! ID={result.target_id}, Class={result.class_name}, '
+                    f'X={result.x_m * 1000.0:.1f}mm, Y={result.y_m * 1000.0:.1f}mm, '
+                    f'Z={result.z_m * 1000.0:.1f}mm, Yaw={result.yaw_deg:.2f}deg'
                 )
-
             else:
                 response.success = False
                 self.get_logger().error(
-                    f'[VISION] 타겟 탐색 실패: '
-                    f'ID={result.target_id}, '
-                    f'Class={result.class_name}, '
-                    f'Reason={result.reason}'
+                    f'[VISION] target search failed: ID={result.target_id}, '
+                    f'Class={result.class_name}, Reason={result.reason}'
                 )
 
         except Exception as e:
-            self.get_logger().error(f'[VISION] 처리 중 심각한 오류 발생: {e}')
+            self.get_logger().error(f'[VISION] fatal processing error: {e}')
             response.success = False
 
         return response
 
-    def destroy_node(self):
-        if self.live_view_timer is not None:
-            try:
-                self.live_view_timer.cancel()
-            except Exception:
-                pass
-            self.live_view_timer = None
+    def request_shutdown(self, reason):
+        if not self.shutdown_requested:
+            self.get_logger().info(reason)
+        self.shutdown_requested = True
+        if self.vision is not None:
+            self.vision.stop_requested = True
 
+    def destroy_node(self):
         if self.vision is not None:
             self.vision.shutdown()
             self.vision = None
-
         super().destroy_node()
 
 
@@ -200,8 +152,6 @@ def main(args=None):
     rclpy.init(args=args)
     node = VisionNode()
     try:
-        # rclpy.spin(node)를 쓰면 callback 안의 종료 플래그를 보고 빠져나오기 어렵다.
-        # spin_once 루프를 사용해서 OpenCV q/ESC 입력 후 main thread에서 정리한다.
         while rclpy.ok() and not getattr(node, 'shutdown_requested', False):
             rclpy.spin_once(node, timeout_sec=0.1)
     except (KeyboardInterrupt, ExternalShutdownException):
@@ -213,6 +163,7 @@ def main(args=None):
             pass
         if rclpy.ok():
             rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

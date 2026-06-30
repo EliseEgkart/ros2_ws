@@ -1,20 +1,21 @@
 """
 Cargo slot manager for in-transit assembly (cargo IDs 7 and 8).
 
-Only products with no side-by-side layers are eligible (is_intransit_eligible).
-Priority rule when more than 2 products qualify:
-  1. Fewest blocks first — simpler assemblies finish sooner, freeing the slot.
-  2. Smallest product_id as deterministic tie-break.
+All produce products are assembled in-transit by the AMR cargo arm.
+When more than 2 products are ordered, they are queued; as soon as a slot is
+freed after delivery, the next queued product is allocated to that slot.
+
+Priority rule for slot assignment:
+  Sort key: (num_blocks / weight, product_id)
+    - Higher weight → assigned earlier (lower sort value).
+    - Fewer blocks → assigned earlier (simpler assemblies free the slot sooner).
+    - Smallest product_id as deterministic tie-break.
 
 Slot lifecycle:
-  allocate()        → assign products to cargo 7/8 at plan time.
-  mark_assembled()  → called when ASSEMBLE starts for a product and the
-                       target cargo slot should be treated as deliverable.
-  free_slot()       → called after product is delivered; releases the slot.
-
-find_slot_for_block() and confirm_placed() are retained for the older direct
-raw-material-to-assembly-slot model, but the current AMR arm loads raw
-materials into cargo 2-6 and assembles them onto cargo 7/8 later.
+  allocate()        → called once at plan time; fills slots 7/8 and queues the rest.
+  mark_assembled()  → called when ASSEMBLE starts; marks slot as deliverable.
+  free_slot()       → called after delivery; releases the slot and auto-assigns
+                       the next queued product (if any).
 """
 
 from typing import Dict, List, Optional
@@ -60,58 +61,114 @@ class CargoAllocator:
         self._slots: Dict[int, Optional[IntransitSlot]] = {
             cargo_id: None for cargo_id in INTRANSIT_CARGO_IDS
         }
+        # Products waiting for a free slot, in priority order.
+        self._queue: List[int] = []
 
-    def allocate(self, produce_product_ids: List[int]) -> Dict[int, int]:
+    def allocate(
+        self,
+        produce_product_ids: List[int],
+        weights: Optional[Dict[int, float]] = None,
+    ) -> Dict[int, int]:
+        """Assign eligible products to cargo 7/8; queue the rest.
+
+        Sort key: (num_blocks / weight, product_id)
+          Higher weight → lower sort value → earlier slot assignment.
+
+        Returns {product_id: cargo_id} for the products immediately assigned
+        to a slot.  Products placed in the queue are not in the returned dict
+        but will be assigned as slots free up via free_slot().
         """
-        Assign eligible products to cargo 7/8.
-        Returns {product_id: cargo_id} for every allocated product.
-        Products that do not get a slot go to the workbench path.
-        """
+        if weights is None:
+            weights = {}
+
         eligible = sorted(
             [pid for pid in produce_product_ids if is_intransit_eligible(pid)],
-            key=lambda pid: (len(get_build_order(pid)), pid),
+            key=lambda pid: (
+                len(get_build_order(pid)) / max(weights.get(pid, 1.0), 1e-9),
+                pid,
+            ),
         )
 
         allocation: Dict[int, int] = {}
+        queue_buf: List[int] = []
+
         for pid in eligible:
+            assigned = False
             for cargo_id in INTRANSIT_CARGO_IDS:
                 if self._slots[cargo_id] is None:
                     self._slots[cargo_id] = IntransitSlot(cargo_id, pid)
                     allocation[pid] = cargo_id
+                    assigned = True
                     break
+            if not assigned:
+                queue_buf.append(pid)
 
+        self._queue = queue_buf
         return allocation
 
+    def _try_assign_from_queue(self) -> Optional[int]:
+        """Assign the next queued product to the first free slot, if both exist.
+        Returns the newly assigned product_id, or None."""
+        if not self._queue:
+            return None
+        for cargo_id in INTRANSIT_CARGO_IDS:
+            if self._slots[cargo_id] is None:
+                pid = self._queue.pop(0)
+                self._slots[cargo_id] = IntransitSlot(cargo_id, pid)
+                return pid
+        return None
+
+    # ------------------------------------------------------------------
+    # Runtime slot management
+    # ------------------------------------------------------------------
+
     def find_slot_for_block(self, material_id: int) -> Optional[int]:
-        """
-        Return the cargo_id of a slot that is currently waiting for
-        material_id as its next block, or None if no slot is waiting.
-        """
+        """Return cargo_id waiting for material_id as its next block, or None."""
         for cargo_id, slot in self._slots.items():
             if slot is not None and slot.next_needed == material_id:
                 return cargo_id
         return None
 
     def confirm_placed(self, cargo_id: int, material_id: int) -> bool:
-        """
-        Record that material_id was placed on cargo_id.
-        Returns True if the in-transit assembly is now complete.
-        """
+        """Record that material_id was placed on cargo_id.
+        Returns True if assembly is now complete."""
         slot = self._slots.get(cargo_id)
         if slot is None:
             return False
         return slot.confirm_block(material_id)
 
     def get_completed_slots(self) -> List[IntransitSlot]:
-        """Return all slots whose assembly is complete (product ready to deliver)."""
+        """Return slots whose assembly is complete (product ready to deliver)."""
         return [s for s in self._slots.values() if s is not None and s.is_complete]
 
-    def free_slot(self, cargo_id: int) -> None:
-        """Release a cargo slot after the product has been delivered."""
+    def free_slot(self, cargo_id: int) -> Optional[int]:
+        """Release cargo_id after delivery. Auto-assigns next queued product.
+        Returns the newly assigned product_id, or None if queue is empty."""
         self._slots[cargo_id] = None
+        return self._try_assign_from_queue()
+
+    def mark_assembled(self, product_id: int) -> Optional[int]:
+        """Mark product_id as assembled on its slot. Returns cargo_id or None."""
+        cargo_id = self.get_product_slot(product_id)
+        if cargo_id is None:
+            return None
+        slot = self._slots.get(cargo_id)
+        if slot is None:
+            return None
+        slot.mark_complete()
+        return cargo_id
+
+    # ------------------------------------------------------------------
+    # Query helpers
+    # ------------------------------------------------------------------
 
     def allocated_products(self) -> List[int]:
+        """Products currently occupying a cargo slot (not queued)."""
         return [s.product_id for s in self._slots.values() if s is not None]
+
+    def queued_products(self) -> List[int]:
+        """Products waiting for a free cargo slot, in priority order."""
+        return list(self._queue)
 
     def is_cargo_allocated(self, cargo_id: int) -> bool:
         return self._slots.get(cargo_id) is not None
@@ -122,28 +179,14 @@ class CargoAllocator:
         return slot.product_id if slot is not None else None
 
     def get_product_slot(self, product_id: int) -> Optional[int]:
-        """Return the cargo_id allocated to product_id, or None."""
+        """Return the cargo_id allocated to product_id (in-slot only), or None."""
         for cargo_id, slot in self._slots.items():
             if slot is not None and slot.product_id == product_id:
                 return cargo_id
         return None
 
-    def mark_assembled(self, product_id: int) -> Optional[int]:
-        """
-        Mark product_id as assembled on its allocated cargo slot.
-        Returns the cargo_id, or None if product_id is not allocated.
-        """
-        cargo_id = self.get_product_slot(product_id)
-        if cargo_id is None:
-            return None
-        slot = self._slots.get(cargo_id)
-        if slot is None:
-            return None
-        slot.mark_complete()
-        return cargo_id
-
     def has_in_progress(self) -> bool:
-        """True if any cargo 7/8 slot has blocks placed but is not yet complete."""
+        """True if any slot has blocks placed but is not yet complete."""
         return any(
             s is not None and len(s.placed) > 0 and not s.is_complete
             for s in self._slots.values()

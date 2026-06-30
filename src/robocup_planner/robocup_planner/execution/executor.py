@@ -1,38 +1,34 @@
 """
-Hybrid executor: follows a static mid list while reacting to workbench
-signals and in-transit assembly completions at runtime.
+Hybrid executor: follows a static mid list while reacting to in-transit
+assembly completions at runtime.
 
-Workbench interrupt rule (M4):
-  - AMR in transit      → divert after completing the NEXT station visit.
-  - AMR at a station    → divert after the current load/unload finishes.
-  - AMR already en route to workbench → ignore the signal (debounce).
+Cargo arm assembly rule (Mod 3):
+  All products — including multi-layer products (Burger, Big Tree, Ice Cream) —
+  are assembled by the AMR cargo arm on cargo slots 7/8.
+  The workbench is used ONLY for RECYCLE (disassembly) in Phase 1.
+  No wb_task('PRODUCE') calls are ever issued.
 
-Cargo overflow rule (A1):
-  If all cargo 2-6 slots are full and no workbench assembly is ready yet,
-  go to the workbench anyway to drop partial materials as a buffer.
+Cargo overflow rule:
+  If all cargo 2-6 slots are full and no in-transit slot is assembling yet,
+  go to the workbench to drop materials as a buffer.
 
-In-transit assembly rule (M1 clarification):
+In-transit assembly rule (Mod 2):
   Completed products on cargo 7/8 are delivered directly from cargo 7/8
   to the customer counter — they do NOT move to cargo 1 first.
+  When a slot is freed after delivery, CargoAllocator auto-assigns the next
+  queued product to that slot; _start_ready_intransit_assembly() is called
+  immediately in case the new product's materials are already loaded.
 
-Two-phase navigation rule (sub_goal / goal):
+Two-phase navigation rule:
   Every station approach is split into two legs:
-    1. navigate_subgoal(id)  — fast cruise to the approach waypoint.
-       At sub_goal: wait_for_intransit_assembly() blocks until the arm
-       finishes any ASSEMBLE operation started during the previous leg.
-    2. navigate_goal(id)     — slow precision parking to the docking point.
-       No arm assembly commands are issued during this phase.
-
-  When delivering to the customer counter, if in-transit cargo-7/8
-  assembly is still running on arrival at sub_goal, the executor waits
-  there until the arm finishes, then proceeds to goal.
+    1. navigate_subgoal(id)  — fast cruise; arm may ASSEMBLE during this leg.
+       At sub_goal: wait_for_intransit_assembly() blocks until arm is idle.
+    2. navigate_goal(id)     — precision parking; arm must be idle.
 """
 
-import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from robocup_planner.execution.cargo_state import CargoManager
 from robocup_planner.planning.cargo_allocator import CargoAllocator
 from robocup_planner.product_catalog import get_material_count
 
@@ -41,14 +37,13 @@ from robocup_planner.product_catalog import get_material_count
 class Plan:
     """Output of the planning phase, consumed by the Executor."""
     mid: List[Dict]                   # ordered pickup sequence (build_mid output)
-    workbench_products: List[int]     # product IDs that require the workbench
-    intransit_products: List[int]     # product IDs allocated to cargo 7/8
+    workbench_products: List[int]     # always empty (Mod 3); kept for compat
+    intransit_products: List[int]     # ALL product IDs queued for cargo arm assembly
     workbench_station_id: int
     customer_station_id: int
     home_station_id: int
-    # Surplus recycled materials (not needed by any assembly; may arrive on cargo
-    # after Phase 1 recycle disassembly — tracked for overflow awareness).
     surplus_recycled: Dict[int, int] = field(default_factory=dict)
+    product_weights: Dict[int, float] = field(default_factory=dict)
 
 
 class Executor:
@@ -61,24 +56,13 @@ class Executor:
     def __init__(self, plan: Plan, node):
         self._plan = plan
         self._node = node
-        self._cargo = CargoManager()
         self._allocator = CargoAllocator()
-        self._allocator.allocate(plan.intransit_products)
+        self._allocator.allocate(plan.intransit_products, plan.product_weights)
 
-        # Workbench signal: set by PlannerNode callback when /workbench/product_ready fires.
-        self.wb_signal = threading.Event()
-        # Remaining workbench-only products not yet assembled.
-        self._pending_wb: List[int] = list(plan.workbench_products)
-        # Count of deliverables ready (cargo 1 + assembled cargo 7/8 slots).
-        self._pending_deliveries: int = 0
-        # mid_cursor persists across workbench detours (C1 fix).
-        self._mid_cursor: int = 0
-        # Prevent re-entrant workbench trips.
+        # Product_ids whose ASSEMBLE command has already been started.
+        self._started_intransit: set = set()
+        # Prevent re-entrant overflow trips.
         self._en_route_to_wb: bool = False
-        # FIFO queue of product_ids assembled at workbench and waiting on cargo 1.
-        self._cargo1_queue: List[int] = []
-        # In-transit product_ids whose ASSEMBLE command has already been started.
-        self._started_intransit: set[int] = set()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -90,10 +74,9 @@ class Executor:
         # Phase 1: recycle pickups (customer counter → workbench → disassembly)
         self._run_recycle_phase()
 
-        # After Phase 1: reclaimed materials may already satisfy a workbench product.
-        if self._should_go_workbench():
-            self._divert_to_workbench()
-        if self._should_deliver():
+        # After Phase 1: reclaimed materials may already satisfy a queued product.
+        self._start_ready_intransit_assembly()
+        if self._has_ready_deliveries():
             self._deliver_all()
 
         # Phase 2: main pickup loop
@@ -110,54 +93,34 @@ class Executor:
 
     def _run_recycle_phase(self) -> None:
         recycle_entries = [
-            e for e in self._plan.mid if e['is_recycle_pickup']
+            e for e in self._plan.mid if e.get('is_recycle_pickup')
         ]
         if not recycle_entries:
             return
 
         self._log(f"Phase 1: recycling {len(recycle_entries)} product(s)")
-
-        # Cargo slot 1 can carry only one assembled product. Each recycled
-        # product must be picked and disassembled before the next pickup.
         workbench_id = self._plan.workbench_station_id
+
         for entry in recycle_entries:
             station_id = entry['station_id']
             pid = entry['recycle_product_id']
 
-            self._log(f"  → navigate to customer station {station_id} (sub_goal)")
+            self._log(f"  → navigate to customer station {station_id}")
             self._node.navigate_subgoal(station_id)
             self._wait_for_intransit_assembly()
             self._node.navigate_goal(station_id)
-            self._log(f"  → pick product {pid}")
-            self._node.arm_pick_product(
-                station_id=station_id,
-                product_id=pid,
-            )
+            self._node.arm_pick_product(station_id=station_id, product_id=pid)
             self._node.call_post_process()
 
-            self._log(f"  → navigate to workbench {workbench_id} (sub_goal)")
+            self._log(f"  → navigate to workbench {workbench_id} for RECYCLE")
             self._node.navigate_subgoal(workbench_id)
             self._wait_for_intransit_assembly()
             self._node.navigate_goal(workbench_id)
-            self._log(f"  → unload product {pid} to workbench")
-            if not self._node.arm_unload_product_to_workbench(
+            self._node.arm_unload_product_to_workbench(
                 product_id=pid,
                 station_id=workbench_id,
-            ):
-                raise RuntimeError(f"failed to unload recycled product {pid} to workbench")
-            self._log(f"  → workbench disassembly of product {pid}")
+            )
             self._node.wb_task('RECYCLE', pid)
-            # After disassembly the arm places reclaimed materials onto cargo 2-6.
-            # We update cargo state to reflect the incoming materials.
-            reclaimed = get_material_count(pid)
-            for mat_id, count in reclaimed.items():
-                for _ in range(count):
-                    placement = self._cargo.place_material(mat_id)
-                    if placement is None:
-                        self._log(
-                            f"  ! cargo full during recycle unload of mat {mat_id}; "
-                            "block lost (planner should have routed this to storage pickup)"
-                        )
             self._node.call_post_process()
 
     # ------------------------------------------------------------------
@@ -166,229 +129,139 @@ class Executor:
 
     def _run_pickup_phase(self) -> None:
         storage_entries = [
-            e for e in self._plan.mid if not e['is_recycle_pickup']
+            e for e in self._plan.mid if not e.get('is_recycle_pickup')
         ]
-        self._mid_cursor = 0
 
-        while self._mid_cursor < len(storage_entries):
-            entry = storage_entries[self._mid_cursor]
+        for idx, entry in enumerate(storage_entries):
             sid = entry['station_id']
             self._log(
-                f"[{self._mid_cursor}/{len(storage_entries)-1}] "
-                f"navigate to storage station {sid}"
+                f"[{idx}/{len(storage_entries)-1}] navigate to storage station {sid}"
             )
 
-            # Two-phase approach: cruise to sub_goal (arm may still assemble),
-            # then wait for assembly, then precision-park at goal (arm idle).
             self._node.navigate_subgoal(sid)
             self._wait_for_intransit_assembly()
             self._node.navigate_goal(sid)
 
-            # Pick each required material from this station.
-            for mat_id in entry['pickup_materials']:
-                cargo_id = self._decide_placement(mat_id)
-
-                if cargo_id is None:
-                    # Cargo 2-6 full and no material fits — divert to workbench now.
-                    self._log("  ! cargo full — diverting to workbench before pickup")
+            needs_revisit = False
+            for mat_id in entry.get('pickup_materials', []):
+                if self._node.cargo_is_full():
+                    self._log("  ! cargo 2-6 full — overflow drop at workbench")
                     self._node.call_post_process()
-                    self._divert_to_workbench(forced=True)
-                    cargo_id = self._decide_placement(mat_id)
-                    if cargo_id is None:
-                        self._log(f"  !! still no space for mat {mat_id} — skipping")
-                        continue
-                    # Re-navigate to the storage station after the workbench detour.
+                    self._overflow_drop_at_workbench()
+                    # Must revisit the station after returning from workbench.
+                    needs_revisit = True
+
+                if needs_revisit:
                     self._node.navigate_subgoal(sid)
                     self._wait_for_intransit_assembly()
                     self._node.navigate_goal(sid)
+                    needs_revisit = False
 
-                self._log(f"  → pick mat {mat_id} → cargo {cargo_id}")
-                self._node.arm_pick_material(
-                    station_id=sid,
-                    material_id=mat_id,
-                )
-                self._on_material_placed(mat_id, cargo_id)
+                self._log(f"  → pick mat {mat_id}")
+                self._node.arm_pick_material(station_id=sid, material_id=mat_id)
+                self._start_ready_intransit_assembly()
 
             self._node.call_post_process()
-            self._mid_cursor += 1
 
-            # Post-station checks (order: workbench first, then delivery).
-            if self._should_go_workbench():
-                self._divert_to_workbench()
-
-            if self._should_deliver():
+            if self._has_ready_deliveries():
                 self._deliver_all()
 
     # ------------------------------------------------------------------
-    # Cargo placement decision
+    # In-transit assembly
     # ------------------------------------------------------------------
 
-    def _decide_placement(self, material_id: int) -> Optional[int]:
-        """
-        Returns the cargo_id (2-8) where material_id will be placed, or None
-        if no space is available anywhere.
-
-        Priority:
-          1. Cargo 2-6 first slot with enough stack space.
-
-        The arm LOAD implementation chooses from material slots 2-6.  Cargo
-        7/8 are target slots for the later ASSEMBLE command, not raw-material
-        load destinations.
-        """
-        return self._cargo.place_material(material_id)
-
-    def _on_material_placed(self, material_id: int, cargo_id: int) -> None:
-        """Update state after a block is successfully placed."""
-        self._start_ready_intransit_assembly()
-
     def _start_ready_intransit_assembly(self) -> bool:
+        """Start ASSEMBLE for the first in-slot product whose materials are all loaded.
+
+        Iterates cargo slots 7 and 8 so the higher-priority slot (assigned first
+        by the allocator) is always checked first. Only one ASSEMBLE is started
+        per call because the arm is single-threaded.
+        Returns True if an ASSEMBLE was started.
         """
-        Start one ready in-transit assembly, if possible.
-
-        Raw materials are loaded into cargo 2-6.  Once all materials for an
-        allocated in-transit product are present, ASSEMBLE moves those materials
-        onto the product's target slot (cargo 7/8).  Only one assembly is
-        started per call because the AMR has a single arm.
-        """
-        for product_id in self._plan.intransit_products:
-            if product_id in self._started_intransit:
+        for cargo_id in (7, 8):
+            product_id = self._allocator.get_slot_product(cargo_id)
+            if product_id is None or product_id in self._started_intransit:
+                continue
+            # Check if all required materials are available in cargo 2-6.
+            if not self._node.cargo_has_all_materials(product_id):
                 continue
 
-            slots = self._cargo.find_materials_for_product(product_id)
-            if slots is None:
+            assembled_cargo = self._allocator.mark_assembled(product_id)
+            if assembled_cargo is None:
                 continue
-
-            cargo_id = self._allocator.mark_assembled(product_id)
-            if cargo_id is None:
-                continue
-
-            for material_cargo_id, mat_id in slots:
-                self._cargo.remove_material(material_cargo_id, mat_id)
 
             self._started_intransit.add(product_id)
             self._log(
-                f"  [READY] in-transit product {product_id} → cargo {cargo_id}; "
+                f"  [READY] in-transit product {product_id} → cargo {assembled_cargo}; "
                 "starting ASSEMBLE async"
             )
-            self._node.arm_assemble_intransit_async(product_id, cargo_id)
-            self._pending_deliveries += 1
+            self._node.arm_assemble_intransit_async(product_id, assembled_cargo)
             return True
 
         return False
 
     def _wait_for_intransit_assembly(self) -> None:
-        """
-        Wait until the arm is idle before the precision goal leg.
-
-        If more products became ready while one assembly was running, start and
-        drain them here so sub_goal → goal remains arm-idle.
-        """
+        """Block until arm is idle; drain any newly-ready assemblies."""
         while True:
             self._node.wait_for_intransit_assembly()
             if not self._start_ready_intransit_assembly():
                 return
 
     # ------------------------------------------------------------------
-    # Workbench divert
+    # Overflow drop at workbench (cargo 2-6 full)
     # ------------------------------------------------------------------
 
-    def _should_go_workbench(self) -> bool:
+    def _overflow_drop_at_workbench(self) -> None:
+        """Navigate to workbench and unload all cargo 2-6 materials as a buffer."""
         if self._en_route_to_wb:
-            return False
-        if self.wb_signal.is_set():
-            return True
-        # Check if any pending workbench product has all its materials ready.
-        return self._cargo.can_assemble_for_workbench(self._pending_wb) is not None
-
-    def _divert_to_workbench(self, forced: bool = False) -> None:
-        """
-        Navigate to the workbench, unload materials for one product,
-        start workbench assembly, then return.  The mid_cursor is preserved
-        so pickup resumes from the same station (C1 fix).
-        """
-        if self._en_route_to_wb and not forced:
             return
-
         self._en_route_to_wb = True
-        self.wb_signal.clear()
 
         wid = self._plan.workbench_station_id
-        self._log(f"  → divert to workbench {wid}")
+        self._log(f"  → overflow drop: navigate to workbench {wid}")
         self._node.navigate_subgoal(wid)
         self._wait_for_intransit_assembly()
         self._node.navigate_goal(wid)
-
-        ready_pid = self._cargo.can_assemble_for_workbench(self._pending_wb)
-        if ready_pid is not None:
-            self._unload_product_materials(ready_pid)
-            self._log(f"  → workbench assemble product {ready_pid}")
-            self._node.wb_task('PRODUCE', ready_pid)
-            self._pending_wb.remove(ready_pid)
-            self._cargo.add_finished_product()
-            self._cargo1_queue.append(ready_pid)
-            self._pending_deliveries += 1
-        elif forced:
-            # Overflow drop: unload whatever is on cargo to free space.
-            self._log("  → overflow drop: unloading all cargo to workbench")
-            self._unload_all_materials()
-
+        self._node.arm_unload_all_materials()
         self._node.call_post_process()
+
         self._en_route_to_wb = False
-
-    def _unload_product_materials(self, product_id: int) -> None:
-        """Remove materials for product_id from cargo 2-6 (arm drops them at workbench)."""
-        slots = self._cargo.find_materials_for_product(product_id)
-        if slots is None:
-            return
-        for cargo_id, mat_id in slots:
-            self._node.arm_unload_material(mat_id)
-            self._cargo.remove_material(cargo_id, mat_id)
-
-    def _unload_all_materials(self) -> None:
-        """Drop everything in cargo 2-6 at the workbench (overflow buffer)."""
-        for cargo_id, mat_id in list(self._cargo.all_materials()):
-            self._node.arm_unload_material(mat_id)
-            self._cargo.remove_material(cargo_id, mat_id)
 
     # ------------------------------------------------------------------
     # Delivery
     # ------------------------------------------------------------------
 
-    def _should_deliver(self) -> bool:
-        return self._pending_deliveries > 0
+    def _has_ready_deliveries(self) -> bool:
+        return bool(self._allocator.get_completed_slots())
 
     def _deliver_all(self) -> None:
-        if not self._should_deliver():
+        completed = self._allocator.get_completed_slots()
+        if not completed:
             return
 
         cid = self._plan.customer_station_id
-
-        # Navigate to sub_goal first: if in-transit assembly is still running
-        # (arm hasn't finished ASSEMBLE on cargo 7/8), wait here before the
-        # precision-parking approach — satisfying the sub_goal hold requirement.
-        self._log(f"  → navigate to customer {cid} (sub_goal)")
+        self._log(f"  → navigate to customer {cid}")
         self._node.navigate_subgoal(cid)
-        self._log("  → waiting for in-transit assembly at sub_goal (if any)")
         self._wait_for_intransit_assembly()
-        # Final approach — arm is idle during sub_goal → goal phase.
         self._node.navigate_goal(cid)
 
-        # Deliver products from cargo 1 (assembled at workbench).
-        while self._cargo.finished_on_cargo1 > 0:
-            product_id = self._cargo1_queue.pop(0) if self._cargo1_queue else 0
-            self._log(f"  → deliver product {product_id} from cargo 1")
-            self._node.arm_deliver(product_id=product_id, from_cargo_id=1)
-            self._cargo.consume_finished_product()
-            self._pending_deliveries -= 1
-
-        # Deliver in-transit assembled products directly from cargo 7/8 (M1 clarification).
+        # Deliver each completed in-transit slot directly from cargo 7/8.
         for slot in list(self._allocator.get_completed_slots()):
             self._log(
-                f"  → deliver in-transit product {slot.product_id} from cargo {slot.cargo_id}"
+                f"  → deliver product {slot.product_id} from cargo {slot.cargo_id}"
             )
-            self._node.arm_deliver(product_id=slot.product_id, from_cargo_id=slot.cargo_id)
-            self._allocator.free_slot(slot.cargo_id)
-            self._pending_deliveries -= 1
+            self._node.arm_deliver(
+                product_id=slot.product_id,
+                from_cargo_id=slot.cargo_id,
+            )
+            newly_queued = self._allocator.free_slot(slot.cargo_id)
+            if newly_queued is not None:
+                new_cargo = self._allocator.get_product_slot(newly_queued)
+                self._log(
+                    f"  [QUEUE] product {newly_queued} now allocated to cargo {new_cargo}"
+                )
+                # Materials for newly_queued may already be loaded — check immediately.
+                self._start_ready_intransit_assembly()
 
         self._node.call_post_process()
 

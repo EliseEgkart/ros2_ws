@@ -97,6 +97,9 @@ class PlannerNode(Node):
         self.declare_parameter('exiting_duration', 1.0)
         self.declare_parameter('debug_export', False)
         self.declare_parameter('debug_export_dir', '')
+        # JSON string: {"product_id": weight, ...}  e.g. '{"8518": 2.0}'
+        # Higher weight → cargo 7/8 slot assigned earlier (assembled first).
+        self.declare_parameter('product_weights_json', '')
 
         wp_path = self.get_parameter('waypoint_yaml').get_parameter_value().string_value
         task_topic = self.get_parameter('task_topic').get_parameter_value().string_value
@@ -108,6 +111,18 @@ class PlannerNode(Node):
         self._debug_export: bool = self.get_parameter('debug_export').get_parameter_value().bool_value
         _export_dir = self.get_parameter('debug_export_dir').get_parameter_value().string_value
         self._debug_export_dir: str = _export_dir if _export_dir else '/tmp/robocup_planner'
+
+        _weights_json = self.get_parameter('product_weights_json').get_parameter_value().string_value
+        if _weights_json:
+            try:
+                _raw = json.loads(_weights_json)
+                self._product_weights: Dict[int, float] = {int(k): float(v) for k, v in _raw.items()}
+                self.get_logger().info(f"Product weights loaded: {self._product_weights}")
+            except Exception as e:
+                self.get_logger().warning(f"product_weights_json parse failed: {e}; using defaults")
+                self._product_weights = {}
+        else:
+            self._product_weights: Dict[int, float] = {}
 
         if not wp_path:
             self.get_logger().warning("waypoint_yaml parameter is empty; distances will be inf")
@@ -169,11 +184,11 @@ class PlannerNode(Node):
     # ------------------------------------------------------------------
 
     def _on_wb_ready(self, msg: Int32) -> None:
+        # Workbench is recycle-only (Mod 3); PRODUCE signals are no longer sent.
+        # Kept as a no-op subscriber so the topic can still be monitored for debugging.
         self.get_logger().info(
-            f"Workbench signal: product {msg.data} ready"
+            f"Workbench signal: product {msg.data} ready (no-op — workbench is recycle-only)"
         )
-        if self._active_executor is not None:
-            self._active_executor.wb_signal.set()
 
     # ------------------------------------------------------------------
     # Planning phase
@@ -398,13 +413,10 @@ class PlannerNode(Node):
         # Build final mid list
         mid = build_mid(full_midlist, net_aidlist)
 
-        # Determine which products go to workbench vs in-transit
-        temp_alloc = CargoAllocator()
-        intransit_allocated = temp_alloc.allocate(produce_ids)
-        intransit_ids = list(intransit_allocated.keys())
-        workbench_ids = [
-            pid for pid in produce_ids if pid not in intransit_ids
-        ]
+        # All products are assembled by the AMR cargo arm (Mod 3).
+        # The Executor's CargoAllocator handles the 2-slot limit + queue internally.
+        intransit_ids = list(produce_ids)
+        workbench_ids: list = []
 
         # Surplus recycled materials (obtained beyond what net_aidlist needs)
         surplus = {}
@@ -421,6 +433,7 @@ class PlannerNode(Node):
             customer_station_id=customer_station_id,
             home_station_id=home_id,
             surplus_recycled=surplus,
+            product_weights=self._product_weights,
         )
 
         self.get_logger().info(

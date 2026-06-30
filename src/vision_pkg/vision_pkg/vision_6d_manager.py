@@ -109,7 +109,7 @@ class Vision6DPoseManager:
         match_distance_px=40.0,
         visualize=False,
         visualize_window="6D Pose (Ensemble Mode)",
-        visualize_scale=2.0,
+        visualize_scale=1.0,
         use_shape_ratio_filter=True,
         shape_ratio_threshold=1.5,
         edge_contact_max_px=10,

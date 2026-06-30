@@ -1,3 +1,5 @@
+## 학교버전으로 쓰고 있음 07.01 02.53
+
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
@@ -197,8 +199,8 @@ UNLOAD_SLOT_X_DIR = {
 }
 
 # --- DELIVERY Z 상수 (배달 위치에서 물체 내려놓을 때, 일반 재료 전용) ---
-DELIVERY_Z_DOWN_MM = 165.0 #학교 115 #대회 165
-DELIVERY_Z_UP_MM = -165.0
+DELIVERY_Z_DOWN_MM = 115.0 #학교 115 #대회 165
+DELIVERY_Z_UP_MM = -115.0  #학교 -115 #대회 -165
 
 
 # --- 완성품(Products) 전용 delivery Z 상수 (층별 3단계) ---

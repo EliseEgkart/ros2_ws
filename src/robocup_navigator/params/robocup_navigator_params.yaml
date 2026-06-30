@@ -42,7 +42,7 @@ robocup_navigator:
     approach_after_goal: true
 
     # 핵심 튜닝 값: 전방 구조물과 유지할 목표 거리.
-    target_front_distance: 0.47
+    target_front_distance: 0.48
 
     # abs(front_distance - target_front_distance)가 이 값 이내로 들어오면 정렬을 종료한다.
     target_distance_tolerance: 0.01

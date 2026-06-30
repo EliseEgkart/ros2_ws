@@ -7,9 +7,11 @@ import time
 
 import rclpy
 import yaml
+from action_msgs.msg import GoalStatus
 from ament_index_python.packages import get_package_share_directory
+from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, Twist
-from nav2_msgs.action import FollowWaypoints
+from nav2_msgs.action import BackUp, FollowWaypoints, Spin as Nav2Spin
 from rclpy.action import (
     ActionClient,
     ActionServer,
@@ -195,10 +197,18 @@ class RobocupNavigator(Node):
             'backup_timeout_sec',
             default_param('backup_timeout_sec', 5.0),
         )
+        self.declare_parameter(
+            'backup_action_name',
+            default_param('backup_action_name', 'backup'),
+        )
 
         self.declare_parameter(
             'rotate_after_backup',
             default_param('rotate_after_backup', True),
+        )
+        self.declare_parameter(
+            'spin_action_name',
+            default_param('spin_action_name', 'spin'),
         )
         self.declare_parameter(
             'rotate_angular_speed',
@@ -237,11 +247,25 @@ class RobocupNavigator(Node):
         ).value
         cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
         scan_topic = self.get_parameter('scan_topic').value
+        backup_action = self.get_parameter('backup_action_name').value
+        spin_action = self.get_parameter('spin_action_name').value
 
         self._follow_client = ActionClient(
             self,
             FollowWaypoints,
             follow_action,
+            callback_group=self._cbg,
+        )
+        self._backup_client = ActionClient(
+            self,
+            BackUp,
+            backup_action,
+            callback_group=self._cbg,
+        )
+        self._spin_client = ActionClient(
+            self,
+            Nav2Spin,
+            spin_action,
             callback_group=self._cbg,
         )
         self._cmd_vel_pub = self.create_publisher(Twist, cmd_vel_topic, 10)
@@ -271,7 +295,7 @@ class RobocupNavigator(Node):
         self.get_logger().info(
             f'Robocup navigator ready: action="{nav_action}", '
             f'post_process="{post_process_service}", '
-            f'cmd_vel="{cmd_vel_topic}", '
+            f'backup_action="{backup_action}", spin_action="{spin_action}", '
             f'stations={sorted(self._stations.keys())}, scan="{scan_topic}"'
         )
 
@@ -928,6 +952,12 @@ class RobocupNavigator(Node):
             self.get_logger().warn('Backup skipped: invalid distance/speed.')
             return True, ''
 
+        if not self._backup_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error(
+                '[BACKUP] BackUp action server unavailable — skipping.'
+            )
+            return True, ''
+
         self._publish_zero_velocity()
 
         if goal_handle is not None:
@@ -940,19 +970,58 @@ class RobocupNavigator(Node):
             f'speed={self._backup_speed:.3f} m/s'
         )
 
-        duration_sec = abs(self._backup_distance) / abs(self._backup_speed)
-        duration_sec = self._limit_motion_duration(
-            duration_sec,
-            self._backup_timeout_sec,
-            'BACKUP',
+        backup_goal = BackUp.Goal()
+        backup_goal.target.x = float(self._backup_distance)
+        backup_goal.speed = float(self._backup_speed)
+        backup_goal.time_allowance = Duration(
+            sec=int(self._backup_timeout_sec)
         )
-        if not self._publish_velocity_for_duration(
-            -abs(self._backup_speed),
-            0.0,
-            duration_sec,
-            goal_handle,
-        ):
-            return False, 'CANCELED'
+
+        done = Event()
+        state = {'succeeded': False, 'exception': None}
+
+        def on_goal_response(future):
+            try:
+                gh = future.result()
+                if not gh.accepted:
+                    self.get_logger().warn('[BACKUP] Goal rejected.')
+                    done.set()
+                    return
+                gh.get_result_async().add_done_callback(on_result)
+            except Exception as exc:
+                state['exception'] = exc
+                done.set()
+
+        def on_result(future):
+            try:
+                wrapped = future.result()
+                state['succeeded'] = (
+                    wrapped.status == GoalStatus.STATUS_SUCCEEDED
+                )
+            except Exception as exc:
+                state['exception'] = exc
+            finally:
+                done.set()
+
+        send_future = self._backup_client.send_goal_async(backup_goal)
+        send_future.add_done_callback(on_goal_response)
+
+        deadline = time.monotonic() + self._backup_timeout_sec + 5.0
+        while not done.is_set():
+            if time.monotonic() >= deadline:
+                self.get_logger().warn('[BACKUP TIMEOUT]')
+                return True, ''
+            time.sleep(self._motion_period_sec)
+
+        if state['exception'] is not None:
+            self.get_logger().error(f'[BACKUP ERROR] {state["exception"]}')
+            return True, ''
+
+        if not state['succeeded']:
+            self.get_logger().warn(
+                '[BACKUP] Action did not succeed (collision or aborted).'
+            )
+            return True, ''
 
         self.get_logger().info('[BACKUP DONE]')
         return True, ''
@@ -981,6 +1050,12 @@ class RobocupNavigator(Node):
             )
             return True, ''
 
+        if not self._spin_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error(
+                '[ROTATE] Spin action server unavailable — skipping.'
+            )
+            return True, ''
+
         self._publish_zero_velocity()
 
         direction_text = (
@@ -1002,26 +1077,63 @@ class RobocupNavigator(Node):
             f'angle={rotation_profile.angle_deg:.1f} deg'
         )
 
+        # Nav2 Spin: positive target_yaw = CCW, negative = CW
         if rotation_profile.direction == 'clockwise':
-            angular_z = -abs(self._rotate_angular_speed)
+            target_yaw = -abs(rotation_profile.angle_rad)
         else:
-            angular_z = abs(self._rotate_angular_speed)
+            target_yaw = abs(rotation_profile.angle_rad)
 
-        duration_sec = (
-            abs(rotation_profile.angle_rad) / abs(self._rotate_angular_speed)
+        spin_goal = Nav2Spin.Goal()
+        spin_goal.target_yaw = float(target_yaw)
+        spin_goal.time_allowance = Duration(
+            sec=int(self._rotate_timeout_sec)
         )
-        duration_sec = self._limit_motion_duration(
-            duration_sec,
-            self._rotate_timeout_sec,
-            'ROTATE',
-        )
-        if not self._publish_velocity_for_duration(
-            0.0,
-            angular_z,
-            duration_sec,
-            goal_handle,
-        ):
-            return False, 'CANCELED'
+
+        done = Event()
+        state = {'succeeded': False, 'exception': None}
+
+        def on_goal_response(future):
+            try:
+                gh = future.result()
+                if not gh.accepted:
+                    self.get_logger().warn('[ROTATE] Goal rejected.')
+                    done.set()
+                    return
+                gh.get_result_async().add_done_callback(on_result)
+            except Exception as exc:
+                state['exception'] = exc
+                done.set()
+
+        def on_result(future):
+            try:
+                wrapped = future.result()
+                state['succeeded'] = (
+                    wrapped.status == GoalStatus.STATUS_SUCCEEDED
+                )
+            except Exception as exc:
+                state['exception'] = exc
+            finally:
+                done.set()
+
+        send_future = self._spin_client.send_goal_async(spin_goal)
+        send_future.add_done_callback(on_goal_response)
+
+        deadline = time.monotonic() + self._rotate_timeout_sec + 5.0
+        while not done.is_set():
+            if time.monotonic() >= deadline:
+                self.get_logger().warn('[ROTATE TIMEOUT]')
+                return True, ''
+            time.sleep(self._motion_period_sec)
+
+        if state['exception'] is not None:
+            self.get_logger().error(f'[ROTATE ERROR] {state["exception"]}')
+            return True, ''
+
+        if not state['succeeded']:
+            self.get_logger().warn(
+                '[ROTATE] Spin action did not succeed (collision or aborted).'
+            )
+            return True, ''
 
         self.get_logger().info('[ROTATE DONE]')
         return True, ''
@@ -1153,43 +1265,6 @@ class RobocupNavigator(Node):
             abs(self._approach_min_speed),
             min(speed, abs(self._approach_speed)),
         )
-
-    def _limit_motion_duration(self, duration_sec: float, timeout_sec: float,
-                               label: str) -> float:
-        if timeout_sec <= 0.0:
-            return max(0.0, duration_sec)
-
-        if duration_sec > timeout_sec:
-            self.get_logger().warn(
-                f'[{label} TIMEOUT LIMIT] required={duration_sec:.2f}s, '
-                f'timeout={timeout_sec:.2f}s'
-            )
-            return timeout_sec
-
-        return max(0.0, duration_sec)
-
-    def _publish_velocity_for_duration(self, linear_x: float, angular_z: float,
-                                       duration_sec: float, goal_handle) -> bool:
-        cmd = Twist()
-        cmd.linear.x = float(linear_x)
-        cmd.angular.z = float(angular_z)
-        deadline = time.monotonic() + duration_sec
-
-        try:
-            while rclpy.ok():
-                if goal_handle is not None and goal_handle.is_cancel_requested:
-                    return False
-
-                remaining = deadline - time.monotonic()
-                if remaining <= 0.0:
-                    return True
-
-                self._cmd_vel_pub.publish(cmd)
-                time.sleep(min(self._motion_period_sec, remaining))
-
-            return False
-        finally:
-            self._publish_zero_velocity()
 
     def _publish_feedback(self, goal_handle, status: str):
         feedback = NavTask.Feedback()

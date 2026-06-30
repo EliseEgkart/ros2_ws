@@ -1,8 +1,15 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import TimerAction
+from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
+    robot_ip_arg = DeclareLaunchArgument(
+        'robot_ip',
+        default_value='10.0.2.8',
+        description='Robot arm controller IP address',
+    )
+
     # 비전 노드 (YOLO 모델 로딩에 시간 소요)
     vision_node = Node(
         package='vision_pkg',
@@ -34,11 +41,15 @@ def generate_launch_description():
                 executable='amr_robot_node',
                 name='amr_robot_node',
                 output='screen',
+                parameters=[{
+                    'robot_ip': LaunchConfiguration('robot_ip'),
+                }],
             ),
         ],
     )
 
     return LaunchDescription([
+        robot_ip_arg,
         vision_node,
         gripper_node,
         cargo_manager_node,

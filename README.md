@@ -344,6 +344,8 @@ ros2 action info /navigate_to_station
 
 `amr_robot_node`가 `10.0.2.8` 연결에 실패한 상태입니다.
 - 로봇팔 전원과 네트워크 연결을 확인합니다.
+- 실제 로봇팔 IP가 다르면 런치할 때 `robot_ip:=<IP>`를 지정합니다.
+  예: `ros2 launch amr_robot_launch amr_robot.launch.py robot_ip:=10.0.2.8`
 - `robot_ready = False` 상태에서는 모든 ARM 요청이 즉시 실패 반환됩니다.
 
 ### 워크벤치 서버 없음 (`WB 서버 없음`)

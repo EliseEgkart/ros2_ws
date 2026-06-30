@@ -11,7 +11,7 @@ import time
 import threading
 
 
-ROBOT_IP = "10.0.2.8"
+DEFAULT_ROBOT_IP = "10.0.2.8"
 
 HOME_JOINT_DEG        = np.array([-90.0,  0.0,   90.0,  0.0, 90.0,  0.0])
 MOVING_JOINT_DEG      = np.array([-90.0, -26.02, 140.8, 0.0, 65.22, 0.0])
@@ -363,6 +363,8 @@ class AmrRobotNode(Node):
     def __init__(self):
         super().__init__('amr_robot_node')
         self.cbg = ReentrantCallbackGroup()
+        self.declare_parameter('robot_ip', DEFAULT_ROBOT_IP)
+        self.robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
 
         self.robot = None
         self.rc = None
@@ -370,26 +372,28 @@ class AmrRobotNode(Node):
         self.robot_ready = False
 
         try:
-            self.robot = rb.Cobot(ROBOT_IP)
+            self.robot = rb.Cobot(self.robot_ip)
             self.rc = rb.ResponseCollector()
             self.robot.set_operation_mode(self.rc, rb.OperationMode.Real)
             self.robot.set_speed_bar(self.rc, 1.0)
             self.robot.set_speed_multiplier(self.rc, 1.5)
             self.robot_ready = True
-            self.get_logger().info('[AMR] robot connected')
+            self.get_logger().info(f'[AMR] robot connected: {self.robot_ip}')
         except Exception as e:
             self.robot = None
             self.rc = None
             self.robot_ready = False
-            self.get_logger().error(f'[AMR] robot connection error: {e}')
+            self.get_logger().error(
+                f'[AMR] robot connection error ({self.robot_ip}): {e}')
 
         # 현재 조인트 각도 읽기용 데이터 채널 (HOME 도착 여부 판정에 사용)
         try:
-            self.robot_data = rb.CobotData(ROBOT_IP)
-            self.get_logger().info('[AMR] data channel connected')
+            self.robot_data = rb.CobotData(self.robot_ip)
+            self.get_logger().info(f'[AMR] data channel connected: {self.robot_ip}')
         except Exception as e:
             self.robot_data = None
-            self.get_logger().warn(f'[AMR] data channel connect failed: {e}')
+            self.get_logger().warn(
+                f'[AMR] data channel connect failed ({self.robot_ip}): {e}')
 
         self.vision_client = self.create_client(
             GetTargetPose, '/get_target_pose', callback_group=self.cbg)

@@ -27,6 +27,11 @@ def generate_launch_description():
         default_value='/home/st02/ros2_ws/best_comp.pt',
         description='YOLO segmentation model path for component/product picking',
     )
+    robot_ip_arg = DeclareLaunchArgument(
+        'robot_ip',
+        default_value='10.0.2.8',
+        description='Robot arm controller IP address',
+    )
 
     vision_node = Node(
         package='vision_pkg',
@@ -62,11 +67,15 @@ def generate_launch_description():
         name='amr_robot_node',
         output='screen',
         emulate_tty=True,
+        parameters=[{
+            'robot_ip': LaunchConfiguration('robot_ip'),
+        }],
     )
 
     return LaunchDescription([
         vision_visualize_arg,
         vision_comp_model_path_arg,
+        robot_ip_arg,
         vision_node,
         gripper_node,
         cargo_manager_node,

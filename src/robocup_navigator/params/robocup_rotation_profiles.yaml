@@ -14,12 +14,12 @@ rotation_profiles:
   station_14_goal:
     direction: clockwise
     angle_deg: 88.959
-  station_7_goal:
-    direction: clockwise
-    angle_deg: 145.652
   station_8_goal:
     direction: clockwise
     angle_deg: 100.782
   station_12_goal:
     direction: clockwise
     angle_deg: 172.345
+  station_72_goal:
+    direction: clockwise
+    angle_deg: 145.652

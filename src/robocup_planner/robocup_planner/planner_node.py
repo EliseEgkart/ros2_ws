@@ -244,7 +244,7 @@ class PlannerNode(Node):
         customer_stations = []
 
         for st in msg.arena_layout:
-            if st.station_type in (StationMsg.ST_STORAGE, StationMsg.ST_HYBRID):
+            if st.station_type == StationMsg.ST_STORAGE:
                 mids = [int(m) for m in st.material_ids]
                 regular = [m for m in mids if 1 <= m <= 8]
                 b1080 = [m for m in mids if 10 <= m <= 80]
@@ -268,7 +268,7 @@ class PlannerNode(Node):
                     f"Station {st.station_id}: regular={regular} "
                     f"batch_1080={b1080} batch_90={b90}"
                 )
-            if st.station_type in (StationMsg.ST_WORKBENCH, StationMsg.ST_HYBRID):
+            if st.station_type == StationMsg.ST_WORKBENCH:
                 workbench_station_ids.append(st.station_id)
             if st.station_type == StationMsg.ST_CUSTOMER:
                 customer_station_id = st.station_id
@@ -285,23 +285,6 @@ class PlannerNode(Node):
             f"Selected workbench station {workbench_station_id} "
             f"from candidates {workbench_station_ids}"
         )
-
-        # Warn when a Hybrid station is chosen as the workbench.
-        # Hybrid stations double as storage shelves; visiting them for workbench
-        # operations (recycle / overflow) when no such work exists is wasteful.
-        hybrid_station_ids = {
-            int(st.station_id)
-            for st in msg.arena_layout
-            if st.station_type == StationMsg.ST_HYBRID
-        }
-        if workbench_station_id in hybrid_station_ids:
-            if not recycle_ids:
-                self.get_logger().warning(
-                    f"[PLAN] Workbench {workbench_station_id} is a Hybrid shelf "
-                    "but there are NO recycle orders. "
-                    "It will only be visited if cargo overflows — "
-                    "consider whether a dedicated workbench (4 or 10) is available."
-                )
 
         if self._debug_export:
             _dbg['input'] = {

@@ -12,7 +12,7 @@ robocup_planner:
     # Debug: export full plan result to JSON file before execution.
     # Set debug_export_dir to an absolute path to override the default (/tmp/robocup_planner).
     debug_export: true
-    debug_export_dir: "/home/st02/ros2_ws/logs"
+    debug_export_dir: "/home/st02/ros2_ws/logs/planner/"
 
 order_server:
   ros__parameters:

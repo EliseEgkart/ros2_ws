@@ -32,9 +32,6 @@ PRODUCT_SLOT = 1
 MATERIAL_SLOTS = [2, 3, 4, 5, 6]
 ASSEMBLY_SLOTS = [7, 8]  # 조립 슬롯 (FIND_EMPTY 검색 대상 아님)
 
-# Official workbench station ids. Workbench unloads are not customer deliveries.
-WORKBENCH_STATION_IDS = {3, 6, 7, 12, 15, 16}
-
 
 class CargoManagerNode(Node):
     def __init__(self):
@@ -46,9 +43,6 @@ class CargoManagerNode(Node):
             slot: []
             for slot in [PRODUCT_SLOT] + MATERIAL_SLOTS + ASSEMBLY_SLOTS
         }
-
-        # 커스터머 센터 delivery 상태: {station_id: {delivery_idx: object_id or None}}
-        self.delivery_state = {}
 
         self.get_logger().info('[CARGO] cargo_manager_node started')
         self.get_logger().info(f'[CARGO] slots: {list(self.slot_state.keys())}')
@@ -75,19 +69,7 @@ class CargoManagerNode(Node):
 
         if action == 'FIND_EMPTY':
             if request.object_id > 8:
-                if not self.slot_state[PRODUCT_SLOT]:
-                    response.success = True
-                    response.slot = PRODUCT_SLOT
-                    response.layer_index = 0
-                    response.message = f'empty product slot found: slot={PRODUCT_SLOT}'
-                    self.get_logger().info(f'[CARGO] {response.message}')
-                    return response
-
-                response.success = False
-                response.slot = -1
-                response.message = 'product slot occupied'
-                self.get_logger().warn(f'[CARGO] {response.message}')
-                return response
+                search_slots = [PRODUCT_SLOT]
             else:
                 search_slots = MATERIAL_SLOTS
 
@@ -105,6 +87,23 @@ class CargoManagerNode(Node):
             response.success = False
             response.slot = -1
             response.message = 'no empty slot'
+            self.get_logger().warn(f'[CARGO] {response.message}')
+
+        elif action == 'FIND_EMPTY_ASSEMBLY_SLOT':
+            # 조립(ASSEMBLE) 요청이 들어왔을 때 사용할 슬롯(7/8)을 매니저가 직접 배정한다.
+            # 호출자(amr_robot_node)가 station_id 같은 걸 슬롯 번호로 오용하지 않도록,
+            # "비어있는 조립 슬롯을 앞에서부터(7 -> 8) 고른다"는 정책을 여기서만 관리한다.
+            for slot in ASSEMBLY_SLOTS:
+                if not self.slot_state[slot]:
+                    response.success = True
+                    response.slot = slot
+                    response.message = f'empty assembly slot found: slot={slot}'
+                    self.get_logger().info(f'[CARGO] {response.message}')
+                    return response
+
+            response.success = False
+            response.slot = -1
+            response.message = 'no empty assembly slot'
             self.get_logger().warn(f'[CARGO] {response.message}')
 
         elif action == 'FIND_OBJECT':
@@ -126,14 +125,48 @@ class CargoManagerNode(Node):
             response.message = f'object_id={request.object_id} not found'
             self.get_logger().warn(f'[CARGO] {response.message}')
 
+        elif action == 'FIND_OBJECT_EXCLUDING':
+            # FIND_OBJECT와 동일하지만, request.slot으로 넘어온 슬롯은 검색에서 제외한다.
+            # 빅트리 조립처럼 같은 object_id가 두 슬롯에 나뉘어 있을 때, 이미 확보한
+            # 슬롯 말고 "다른" 슬롯에 있는 걸 찾아야 하는 경우에 쓴다.
+            exclude_slot = request.slot
+            for slot, stack in self.slot_state.items():
+                if slot == exclude_slot:
+                    continue
+                if request.object_id in stack:
+                    layer = self._layer_index(slot, request.object_id)
+                    response.success = True
+                    response.slot = slot
+                    response.layer_index = layer
+                    response.message = (
+                        f'object found (excluding slot={exclude_slot}): '
+                        f'object_id={request.object_id}, slot={slot}, layer_index={layer}'
+                    )
+                    self.get_logger().info(f'[CARGO] {response.message}')
+                    return response
+
+            response.success = False
+            response.slot = -1
+            response.message = f'object_id={request.object_id} not found (excluding slot={exclude_slot})'
+            self.get_logger().warn(f'[CARGO] {response.message}')
+
+        elif action == 'FIND_SLOT_STACK':
+            slot = request.slot
+            if slot not in self.slot_state:
+                response.success = False
+                response.message = f'invalid slot={slot}'
+            else:
+                response.success = True
+                response.slot = slot
+                response.stack = list(self.slot_state[slot])
+                response.message = f'slot={slot} stack={self.slot_state[slot]}'
+                self.get_logger().info(f'[CARGO] {response.message}')
+
         elif action == 'SET':
             slot = request.slot
             if slot not in self.slot_state:
                 response.success = False
                 response.message = f'invalid slot={slot}'
-            elif slot == PRODUCT_SLOT and request.object_id > 8 and self.slot_state[slot]:
-                response.success = False
-                response.message = 'product slot occupied'
             else:
                 obj = request.object_id
                 self.slot_state[slot].append(obj)
@@ -182,81 +215,6 @@ class CargoManagerNode(Node):
             response.success = True
             response.message = ' | '.join(lines)
             self.get_logger().info(f'[CARGO] STATUS: {response.message}')
-
-        elif action == 'FIND_DELIVERY_EMPTY':
-            station_id = request.station_id
-            if station_id in WORKBENCH_STATION_IDS:
-                response.success = True
-                response.slot = 0
-                response.message = f'workbench station={station_id}: delivery tracking skipped'
-                self.get_logger().info(f'[CARGO] {response.message}')
-                return response
-            station = self.delivery_state.setdefault(station_id, {})
-            for idx in range(6):
-                if station.get(idx) is None:
-                    response.success = True
-                    response.slot = idx
-                    response.message = f'empty delivery slot found: station={station_id}, idx={idx}'
-                    self.get_logger().info(f'[CARGO] {response.message}')
-                    return response
-            response.success = False
-            response.slot = -1
-            response.message = f'no empty delivery slot at station={station_id}'
-            self.get_logger().warn(f'[CARGO] {response.message}')
-
-        elif action == 'SET_DELIVERY':
-            station_id = request.station_id
-            if station_id in WORKBENCH_STATION_IDS:
-                response.success = True
-                response.slot = request.slot
-                response.message = f'workbench station={station_id}: delivery tracking skipped'
-                self.get_logger().info(f'[CARGO] {response.message}')
-                return response
-            idx = request.slot
-            station = self.delivery_state.setdefault(station_id, {})
-            prev = station.get(idx)
-            station[idx] = request.object_id
-            name = MATERIAL_NAMES.get(request.object_id, f'product_id={request.object_id}')
-            response.success = True
-            response.slot = idx
-            response.message = (
-                f'delivery updated: station={station_id}, idx={idx}: '
-                f'{prev} -> object_id={request.object_id} ({name})'
-            )
-            self.get_logger().info(f'[CARGO] {response.message}')
-
-        elif action == 'CLEAR_DELIVERY':
-            station_id = request.station_id
-            if station_id in WORKBENCH_STATION_IDS:
-                response.success = True
-                response.slot = request.slot
-                response.message = f'workbench station={station_id}: delivery tracking skipped'
-                self.get_logger().info(f'[CARGO] {response.message}')
-                return response
-            idx = request.slot
-            station = self.delivery_state.setdefault(station_id, {})
-            station[idx] = None
-            response.success = True
-            response.slot = idx
-            response.message = f'delivery cleared: station={station_id}, idx={idx}'
-            self.get_logger().info(f'[CARGO] {response.message}')
-
-        elif action == 'STATUS_DELIVERY':
-            station_id = request.station_id
-            if station_id in WORKBENCH_STATION_IDS:
-                response.success = True
-                response.message = f'workbench station={station_id}: no delivery tracking'
-                self.get_logger().info(f'[CARGO] {response.message}')
-                return response
-            station = self.delivery_state.get(station_id, {})
-            lines = []
-            for idx in range(6):
-                obj = station.get(idx)
-                name = MATERIAL_NAMES.get(obj, f'product_id={obj}') if obj is not None else 'empty'
-                lines.append(f'idx={idx}: {name}')
-            response.success = True
-            response.message = f'station={station_id} | ' + ' | '.join(lines)
-            self.get_logger().info(f'[CARGO] {response.message}')
 
         else:
             response.success = False

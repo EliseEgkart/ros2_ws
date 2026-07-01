@@ -7,3 +7,4 @@ bool success
 int32 slot
 int32 layer_index
 string message
+int32[] stack

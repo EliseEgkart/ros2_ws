@@ -21,7 +21,7 @@ import os
 import threading
 from collections import Counter
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import rclpy
 from rclpy.action import ActionClient
@@ -717,7 +717,11 @@ class PlannerNode(Node):
     # Blocking helpers called by Executor (run in executor thread)
     # ------------------------------------------------------------------
 
-    def navigate(self, station_id: int) -> bool:
+    def navigate(
+        self,
+        station_id: int,
+        on_accepted: Optional[Callable[[], None]] = None,
+    ) -> bool:
         """Navigate directly to station_id goal (positive) or sub_goal (negative)."""
         self._nav_client.wait_for_server()
 
@@ -735,6 +739,13 @@ class PlannerNode(Node):
                 self.get_logger().error(f"NavTask goal rejected for station {station_id}")
                 done.set()
                 return
+            if on_accepted is not None:
+                try:
+                    on_accepted()
+                except Exception as exc:
+                    self.get_logger().error(
+                        f"Navigation accepted callback failed: {exc}"
+                    )
             gh.get_result_async().add_done_callback(_result_cb)
 
         goal = NavTask.Goal()
@@ -781,22 +792,30 @@ class PlannerNode(Node):
         )
         return True
 
-    def navigate_subgoal(self, station_id: int) -> bool:
+    def navigate_subgoal(
+        self,
+        station_id: int,
+        on_accepted: Optional[Callable[[], None]] = None,
+    ) -> bool:
         """Navigate to the sub_goal (approach) position of station_id.
 
         Convention: negative station_id signals the nav server to stop at
         the sub_goal waypoint (station_N_sub_goal) instead of the docking goal.
         """
         self.get_logger().info(f"[NAV] → sub_goal of station {station_id}")
-        return self.navigate(-abs(station_id))
+        return self.navigate(-abs(station_id), on_accepted=on_accepted)
 
-    def navigate_goal(self, station_id: int) -> bool:
+    def navigate_goal(
+        self,
+        station_id: int,
+        on_accepted: Optional[Callable[[], None]] = None,
+    ) -> bool:
         """Navigate the final leg from sub_goal to the docking goal of station_id.
 
         No arm assembly should occur during this phase (precision parking).
         """
         self.get_logger().info(f"[NAV] → goal of station {station_id}")
-        return self.navigate(abs(station_id))
+        return self.navigate(abs(station_id), on_accepted=on_accepted)
 
     def arm_assemble_intransit_async(
         self, product_id: int, cargo_id: int

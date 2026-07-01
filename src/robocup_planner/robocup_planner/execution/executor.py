@@ -25,9 +25,9 @@ In-transit assembly rule (Mod 2):
   Completed products on cargo 7/8 are delivered directly from cargo 7/8
   to the customer counter — they do NOT move to cargo 1 first.
   When a slot is freed after delivery, CargoAllocator auto-assigns the next
-  queued product to that slot; _start_ready_intransit_assembly() is called
-  after the customer post-process exit maneuver so assembly does not overlap
-  with backup/rotation.
+  queued product to that slot. Assembly is deferred until the next travel leg
+  is accepted, so it does not overlap with backup/rotation and does not make
+  the AMR idle after exiting a station.
 
 Two-phase navigation rule:
   Every station approach is split into two legs:
@@ -84,6 +84,7 @@ class Executor:
         self._started_intransit: set = set()
         # Prevent re-entrant overflow trips.
         self._en_route_to_wb: bool = False
+        self._deferred_intransit_start: bool = False
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -99,8 +100,8 @@ class Executor:
         # designated storage station, instead of leaving them stuck in cargo.
         self._return_surplus_materials()
 
-        # After Phase 1: reclaimed materials may already satisfy a queued product.
-        self._start_ready_intransit_assembly()
+        # After Phase 1, only wait for assemblies already started during travel.
+        # Newly ready work remains deferred until the next accepted travel leg.
         self._wait_for_intransit_assembly()
         if self._has_ready_deliveries():
             self._deliver_all()
@@ -156,14 +157,14 @@ class Executor:
             pid = entry['recycle_product_id']
 
             self._log(f"  → navigate to customer station {station_id}")
-            self._node.navigate_subgoal(station_id)
+            self._navigate_subgoal(station_id)
             self._wait_for_intransit_assembly()
             self._node.navigate_goal(station_id)
             self._node.arm_pick_product(station_id=station_id, product_id=pid)
             self._node.call_post_process()
 
             self._log(f"  → navigate to workbench {workbench_id} for RECYCLE")
-            self._node.navigate_goal(workbench_id)
+            self._navigate_goal(workbench_id, allow_intransit_assembly=True)
 
             # Clear out the previous product's disassembled materials first so
             # the workbench shelf is free before we place the next product on it.
@@ -181,7 +182,7 @@ class Executor:
             pending_wb_handle = self._node.wb_task_async('RECYCLE', pid)
             pending_wb_pid = pid
             self._node.call_post_process()
-            self._start_ready_intransit_assembly()
+            self._defer_ready_intransit_assembly()
 
             # Cargo pressure check: with several recycle products in flight,
             # cargo 2-6 can fill up with reclaimed material before it's all
@@ -195,13 +196,14 @@ class Executor:
                 )
                 self._node.arm_unload_all_materials()
                 self._node.call_post_process()
+                self._defer_ready_intransit_assembly()
 
         # Collect whatever disassembly is still pending after the last pickup.
         if pending_wb_handle is not None:
             self._collect_recycled_materials(
                 pending_wb_handle, pending_wb_pid, workbench_id
             )
-            self._start_ready_intransit_assembly()
+            self._defer_ready_intransit_assembly()
 
     def _collect_recycled_materials(
         self, handle, pid: int, workbench_id: int
@@ -274,7 +276,7 @@ class Executor:
 
         for station_id, mat_ids in by_station.items():
             self._log(f"  → navigate to storage {station_id} to return {mat_ids}")
-            self._node.navigate_subgoal(station_id)
+            self._navigate_subgoal(station_id)
             self._wait_for_intransit_assembly()
             self._node.navigate_goal(station_id)
             for mat_id in mat_ids:
@@ -317,7 +319,7 @@ class Executor:
                 f"[{idx}/{len(storage_entries)-1}] navigate to storage station {sid}"
             )
 
-            self._node.navigate_subgoal(sid)
+            self._navigate_subgoal(sid)
             self._wait_for_intransit_assembly()
             self._node.navigate_goal(sid)
 
@@ -331,7 +333,7 @@ class Executor:
                     needs_revisit = True
 
                 if needs_revisit:
-                    self._node.navigate_subgoal(sid)
+                    self._navigate_subgoal(sid)
                     self._wait_for_intransit_assembly()
                     self._node.navigate_goal(sid)
                     needs_revisit = False
@@ -340,7 +342,7 @@ class Executor:
                 self._node.arm_pick_material(station_id=sid, material_id=mat_id)
 
             self._node.call_post_process()
-            self._start_ready_intransit_assembly()
+            self._defer_ready_intransit_assembly()
 
             if self._has_ready_deliveries():
                 self._deliver_all()
@@ -348,6 +350,33 @@ class Executor:
     # ------------------------------------------------------------------
     # In-transit assembly
     # ------------------------------------------------------------------
+
+    def _navigate_subgoal(self, station_id: int) -> bool:
+        return self._node.navigate_subgoal(
+            station_id,
+            on_accepted=self._start_deferred_intransit_assembly,
+        )
+
+    def _navigate_goal(
+        self,
+        station_id: int,
+        allow_intransit_assembly: bool = False,
+    ) -> bool:
+        on_accepted = (
+            self._start_deferred_intransit_assembly
+            if allow_intransit_assembly
+            else None
+        )
+        return self._node.navigate_goal(station_id, on_accepted=on_accepted)
+
+    def _defer_ready_intransit_assembly(self) -> None:
+        self._deferred_intransit_start = True
+
+    def _start_deferred_intransit_assembly(self) -> None:
+        if not self._deferred_intransit_start:
+            return
+        self._deferred_intransit_start = False
+        self._start_ready_intransit_assembly()
 
     def _start_ready_intransit_assembly(self) -> bool:
         """Start ASSEMBLE for the first in-slot product whose materials are all loaded.
@@ -414,7 +443,7 @@ class Executor:
 
         wid = self._plan.workbench_station_id
         self._log(f"  → overflow drop: navigate to workbench {wid}")
-        self._node.navigate_subgoal(wid)
+        self._navigate_subgoal(wid)
         self._wait_for_intransit_assembly()
         self._node.navigate_goal(wid)
         self._node.arm_unload_all_materials()
@@ -436,7 +465,7 @@ class Executor:
 
         cid = self._plan.customer_station_id
         self._log(f"  → navigate to customer {cid}")
-        self._node.navigate_subgoal(cid)
+        self._navigate_subgoal(cid)
         self._wait_for_intransit_assembly()
         self._node.navigate_goal(cid)
 
@@ -460,7 +489,7 @@ class Executor:
 
         self._node.call_post_process()
         if queued_new_product:
-            self._start_ready_intransit_assembly()
+            self._defer_ready_intransit_assembly()
 
     # ------------------------------------------------------------------
     # Return to home
@@ -470,7 +499,7 @@ class Executor:
         """Navigate back to the home station (0 for A-side, 14 for B-side)."""
         home_id = self._plan.home_station_id
         self._log(f"Returning to home station {home_id}")
-        self._node.navigate_subgoal(home_id)
+        self._navigate_subgoal(home_id)
         self._wait_for_intransit_assembly()
         self._node.navigate_goal(home_id)
         self._log(f"Arrived at home station {home_id} — mission complete")

@@ -276,6 +276,7 @@ class TaskPublisherNode(Node):
 
         self._build_task = TASK_BUILDERS[key]
         self._publish_once = publish_once
+        self._shutdown_requested = False
         self._publisher = self.create_publisher(Task, topic_name, 10)
         self._side_a_publisher = self.create_publisher(Task, side_a_topic_name, 10)
         self._side_b_publisher = self.create_publisher(Task, side_b_topic_name, 10)
@@ -312,8 +313,7 @@ class TaskPublisherNode(Node):
         if self._publish_once:
             self.get_logger().info('Published one task. Shutting down.')
             self._timer.cancel()
-            if rclpy.ok():
-                rclpy.shutdown()
+            self._shutdown_requested = True
 
 
 def main(args=None) -> None:
@@ -321,7 +321,8 @@ def main(args=None) -> None:
     node = TaskPublisherNode()
 
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not node._shutdown_requested:
+            rclpy.spin_once(node, timeout_sec=0.1)
     except ExternalShutdownException:
         pass
     except KeyboardInterrupt:

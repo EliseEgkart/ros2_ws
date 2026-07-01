@@ -26,7 +26,7 @@ setup(
         'console_scripts': [
             'task_publisher = eai_task_server.task_publisher:main',
             'task_listener = eai_task_server.task_listener:main',
-            'task_complexity_publisher = task_complexity_publisher.task_listener:main',
+            'task_complexity_publisher = eai_task_server.task_complexity_publisher:main',
         ],
     },
 )

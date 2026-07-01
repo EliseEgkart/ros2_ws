@@ -36,6 +36,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 import random
+import sys
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import rclpy
@@ -738,6 +739,7 @@ class TaskComplexityPublisherNode(Node):
         side_b_topic_name = self.get_parameter("side_b_topic_name").get_parameter_value().string_value
         period = self.get_parameter("publish_period_sec").get_parameter_value().double_value
         self._publish_once = self.get_parameter("publish_once").get_parameter_value().bool_value
+        self._shutdown_requested = False
         seed = self.get_parameter("seed").get_parameter_value().integer_value
         self._rng = random.Random(seed if seed != 0 else None)
 
@@ -814,8 +816,7 @@ class TaskComplexityPublisherNode(Node):
         if self._publish_once:
             self.get_logger().info("Published one task. Shutting down.")
             self._timer.cancel()
-            if rclpy.ok():
-                rclpy.shutdown()
+            self._shutdown_requested = True
 
     def _log_task_summary(self, task: Task) -> None:
         self.get_logger().info(
@@ -839,11 +840,13 @@ class TaskComplexityPublisherNode(Node):
 
 
 def main(args=None) -> None:
+    sys.stdout.reconfigure(line_buffering=True)
     rclpy.init(args=args)
     node = TaskComplexityPublisherNode()
 
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not node._shutdown_requested:
+            rclpy.spin_once(node, timeout_sec=0.1)
     except ExternalShutdownException:
         pass
     except KeyboardInterrupt:

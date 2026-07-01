@@ -1,62 +1,27 @@
 #!/usr/bin/env python3
 
+import random
+
 import rclpy
+from eai_task_server.task_complexity_publisher import (
+    COMPLEXITY,
+    build_side_only_task,
+    build_task_from_products,
+)
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from sml_messages.msg import Order, Station, Task
+from sml_messages.msg import Task
 
 
-def make_order(order_type: int, name: str, product_id: int) -> Order:
-    order = Order()
-    order.order_type = order_type
-    order.name = name
-    order.product_id = product_id
-    return order
-
-
-def make_station(station_type: int, name: str, station_id: int, material_ids: list[int]) -> Station:
-    station = Station()
-    station.station_type = station_type
-    station.name = name
-    station.station_id = station_id
-    station.material_ids = material_ids
-    return station
-
-
-def build_lifecycle_entry_task() -> Task:
-    task = Task()
-    task.order_list = [
-        make_order(Order.OT_PRODUCE, 'produce_battery', 34),
-        make_order(Order.OT_PRODUCE, 'produce_estop', 81),
-        make_order(Order.OT_RECYCLE, 'recycle_magnet', 13),
-    ]
-    task.arena_layout = [
-        make_station(Station.ST_STORAGE, 'side_a_storage_1', 1, [1, 8]),
-        make_station(Station.ST_STORAGE, 'side_a_storage_2', 2, [3, 4]),
-        make_station(Station.ST_STORAGE, 'side_a_storage_3', 3, []),
-        make_station(Station.ST_WORKBENCH, 'side_a_workbench_1', 4, []),
-        make_station(Station.ST_WORKBENCH, 'side_a_workbench_2', 5, []),
-        make_station(Station.ST_HYBRID, 'side_a_hybrid_1', 6, []),
-        make_station(Station.ST_CUSTOMER, 'side_a_customer_1', 7, [13]),
-        make_station(Station.ST_STORAGE, 'side_b_storage_1', 8, [1, 8]),
-        make_station(Station.ST_STORAGE, 'side_b_storage_2', 9, [3, 4]),
-        make_station(Station.ST_STORAGE, 'side_b_storage_3', 10, []),
-        make_station(Station.ST_WORKBENCH, 'side_b_workbench_1', 11, []),
-        make_station(Station.ST_WORKBENCH, 'side_b_workbench_2', 12, []),
-        make_station(Station.ST_HYBRID, 'side_b_hybrid_1', 13, []),
-        make_station(Station.ST_CUSTOMER, 'side_b_customer_1', 14, [13]),
-    ]
-    return task
-
-
-def build_side_only_task(task: Task, side: str) -> Task:
-    side_prefix = f'{side}_'
-    side_task = Task()
-    side_task.order_list = list(task.order_list)
-    side_task.arena_layout = [
-        station for station in task.arena_layout if station.name.startswith(side_prefix)
-    ]
-    return side_task
+def build_lifecycle_entry_task(rng: random.Random) -> Task:
+    rule = COMPLEXITY[('beginner', 'lifecycle')]
+    return build_task_from_products(
+        rule,
+        produce_ids=[34, 81, 442],
+        recycle_ids=[13, 241],
+        selected_sides=['side_a', 'side_b'],
+        rng=rng,
+    )
 
 
 class EntryServer0702Node(Node):
@@ -68,6 +33,7 @@ class EntryServer0702Node(Node):
         self.declare_parameter('side_b_topic_name', '/eai/task/side_b')
         self.declare_parameter('publish_period_sec', 1.0)
         self.declare_parameter('publish_once', True)
+        self.declare_parameter('seed', 0)
 
         topic_name = self.get_parameter('topic_name').get_parameter_value().string_value
         side_a_topic_name = self.get_parameter('side_a_topic_name').get_parameter_value().string_value
@@ -75,6 +41,9 @@ class EntryServer0702Node(Node):
         period = self.get_parameter('publish_period_sec').get_parameter_value().double_value
         self._publish_once = self.get_parameter('publish_once').get_parameter_value().bool_value
         self._shutdown_requested = False
+        seed = self.get_parameter('seed').get_parameter_value().integer_value
+        self._rng = random.Random(seed if seed != 0 else None)
+        self._task = build_lifecycle_entry_task(self._rng)
 
         self._publisher = self.create_publisher(Task, topic_name, 10)
         self._side_a_publisher = self.create_publisher(Task, side_a_topic_name, 10)
@@ -89,17 +58,24 @@ class EntryServer0702Node(Node):
         self.get_logger().info(f'Publishing side-specific task for side_b on {side_b_topic_name}')
 
     def _publish_task(self) -> None:
-        task = build_lifecycle_entry_task()
-        side_a_task = build_side_only_task(task, 'side_a')
-        side_b_task = build_side_only_task(task, 'side_b')
+        side_a_task = build_side_only_task(self._task, 'side_a')
+        side_b_task = build_side_only_task(self._task, 'side_b')
 
-        self._publisher.publish(task)
+        self._publisher.publish(self._task)
         self._side_a_publisher.publish(side_a_task)
         self._side_b_publisher.publish(side_b_task)
 
-        self.get_logger().debug(
-            f'Published fixed task with {len(task.order_list)} orders and '
-            f'{len(task.arena_layout)} stations'
+        self.get_logger().info(
+            f'Published task: orders={len(self._task.order_list)}, '
+            f'stations={len(self._task.arena_layout)}'
+        )
+        self.get_logger().info(
+            f'Published side_a task: orders={len(side_a_task.order_list)}, '
+            f'stations={len(side_a_task.arena_layout)}'
+        )
+        self.get_logger().info(
+            f'Published side_b task: orders={len(side_b_task.order_list)}, '
+            f'stations={len(side_b_task.arena_layout)}'
         )
 
         if self._publish_once:

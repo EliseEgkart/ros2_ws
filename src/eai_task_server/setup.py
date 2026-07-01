@@ -29,7 +29,6 @@ setup(
             'task_complexity_publisher = eai_task_server.task_complexity_publisher:main',
             'entry_server_0702 = eai_task_server.entry_server_0702:main',
             'beginner_server_0702 = eai_task_server.beginner_server_0702:main',
-            'lifecycle_entry_server_0702 = eai_task_server.lifecycle_entry_server_0702:main',
         ],
     },
 )

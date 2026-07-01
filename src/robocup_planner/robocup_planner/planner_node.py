@@ -422,9 +422,29 @@ class PlannerNode(Node):
                 ],
             }
 
-        # Compute aidlist and net_aidlist (recycling already subtracted)
+        # A recycle order can only be picked up "cold" (before anything else
+        # happens) if that product is physically sitting on the customer
+        # counter in the initial arena state. When the same product id is
+        # also being produced this run (the "lifecycle" case) and no such
+        # initial stock exists, there is nothing to disassemble yet — the
+        # robot must assemble it, deliver it to the customer, and only then
+        # pick it back up for disassembly. Split recycle orders accordingly.
+        customer_initial_products = {
+            int(m) for st in customer_stations for m in st.material_ids
+        }
+        recycle_immediate_ids = [pid for pid in recycle_ids if pid in customer_initial_products]
+        recycle_deferred_ids = [pid for pid in recycle_ids if pid not in customer_initial_products]
+        if recycle_deferred_ids:
+            self.get_logger().info(
+                f"Recycle orders with no initial customer stock (produce-then-recycle): "
+                f"{recycle_deferred_ids} — deferred until after delivery"
+            )
+
+        # Compute aidlist and net_aidlist (only immediately-available recycling
+        # is subtracted — deferred recycling happens after production, so it
+        # must not reduce the materials fetched for production itself).
         aidlist, net_aidlist, recycled_materials = compute_net_aidlist(
-            produce_ids, recycle_ids
+            produce_ids, recycle_immediate_ids
         )
         self.get_logger().info(
             f"aidlist={dict(aidlist)}, net_aidlist={dict(net_aidlist)}"
@@ -433,8 +453,8 @@ class PlannerNode(Node):
         # Simulate Phase 1 recycle disassembly to detect cargo overflow at plan time.
         # Materials that would overflow and are still needed get added back to
         # net_aidlist so they are fetched from storage instead of lost silently.
-        if recycle_ids:
-            overflow_needed = self._check_recycle_overflow(recycle_ids, net_aidlist)
+        if recycle_immediate_ids:
+            overflow_needed = self._check_recycle_overflow(recycle_immediate_ids, net_aidlist)
             if overflow_needed:
                 net_aidlist += overflow_needed
                 self.get_logger().info(
@@ -510,13 +530,16 @@ class PlannerNode(Node):
                 f"Cannot satisfy aidlist — missing: {dict(missing)}"
             )
 
-        # Recycling is always triggered when recycle orders exist
-        needs_recycling = bool(recycle_ids)
+        # Phase 1 (customer-counter-first) recycling is only triggered for
+        # products that already have stock sitting at the customer counter.
+        needs_recycling = bool(recycle_immediate_ids)
 
-        # Build recycle orders (map each recycle product to the customer station)
+        # Build recycle orders (map each immediately-recyclable product to the
+        # customer station). Deferred recycle orders are handled after
+        # delivery instead (see Plan.deferred_recycle_ids / Executor).
         recycle_orders = [
             {'station_id': customer_station_id, 'product_id': pid}
-            for pid in recycle_ids
+            for pid in recycle_immediate_ids
         ]
 
         # Build full midlist with batch support
@@ -585,6 +608,7 @@ class PlannerNode(Node):
             surplus_recycled=surplus,
             material_home_station=material_home_station,
             product_weights=self._product_weights,
+            deferred_recycle_ids=recycle_deferred_ids,
         )
 
         self.get_logger().info(

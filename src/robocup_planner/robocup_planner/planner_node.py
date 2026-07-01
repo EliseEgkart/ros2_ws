@@ -37,10 +37,15 @@ TASK_QOS = QoSProfile(
 
 from robocup_pkg.action import NavTask, WbTask
 from robocup_pkg.srv import ArmCommand
-from sml_messages.msg import Task
+from sml_messages.msg import Station, Task
 from std_msgs.msg import Int32
 from std_srvs.srv import Trigger
 
+from sml_system_pkg.arena_side_utils import (
+    normalize_side,
+    side_to_fixed_workbench_station,
+    side_to_start_goal_station,
+)
 from robocup_planner.planning.aidlist_builder import compute_net_aidlist
 from robocup_planner.planning.cargo_allocator import CargoAllocator
 from robocup_planner.planning.distance_calculator import DistanceCalculator
@@ -115,7 +120,9 @@ class PlannerNode(Node):
         _export_dir = self.get_parameter('debug_export_dir').get_parameter_value().string_value
         self._debug_export_dir: str = _export_dir if _export_dir else '/tmp/robocup_planner'
 
-        self._side: str = self.get_parameter('side').get_parameter_value().string_value.lower()
+        self._side: str = normalize_side(
+            self.get_parameter('side').get_parameter_value().string_value
+        )
         _weights_json = self.get_parameter('product_weights_json').get_parameter_value().string_value
         if _weights_json:
             try:
@@ -165,16 +172,87 @@ class PlannerNode(Node):
     # Task callback — triggers planning + execution
     # ------------------------------------------------------------------
 
-    def _remap_shared_stations(self, msg: Task) -> Task:
-        """주최 referee box가 공유 선반을 station_id=7로 보낼 경우 side에 따라 71(A)/72(B)로 변환."""
+    @staticmethod
+    def _copy_station(station: Station) -> Station:
+        copied = Station()
+        copied.station_type = int(station.station_type)
+        copied.name = str(getattr(station, 'name', ''))
+        copied.station_id = int(station.station_id)
+        copied.material_ids = [int(x) for x in station.material_ids]
+        return copied
+
+    @staticmethod
+    def _station_name(station: Station) -> str:
+        return str(getattr(station, 'name', '') or '').strip().lower()
+
+    @classmethod
+    def _is_shared_station(cls, station: Station) -> bool:
+        name = cls._station_name(station)
+        station_id = int(station.station_id)
+        return (
+            station_id in (7, 71, 72)
+            or name.startswith('shared_')
+            or name.endswith('_shared_storage')
+            or 'shared_storage' in name
+        )
+
+    def _station_matches_side(self, station: Station) -> bool:
+        """Return whether a station belongs to this planner's competition side."""
+        if self._is_shared_station(station):
+            return True
+
+        name = self._station_name(station)
+        if name.startswith('side_a_'):
+            return self._side == 'a'
+        if name.startswith('side_b_'):
+            return self._side == 'b'
+
+        station_id = int(station.station_id)
+        if self._side == 'b':
+            return station_id in {8, 9, 10, 11, 12, 13}
+        return station_id in {1, 2, 3, 4, 5, 6}
+
+    def _prepare_task_for_side(self, msg: Task) -> Task:
+        """Filter official/full layouts to the selected competition side.
+
+        The competition stack executes one side at a time.  Some task sources
+        publish only that side, while test/referee-like sources may include
+        mirrored A/B stations.  Keep only the configured side plus shared
+        storage, then map shared station id 7 to the real side approach id.
+        """
+        prepared = Task()
+        prepared.order_list = list(msg.order_list)
+
+        kept = []
+        dropped = []
         shared_id = 72 if self._side == 'b' else 71
         for station in msg.arena_layout:
-            if station.station_id == 7:
-                station.station_id = shared_id
+            if not self._station_matches_side(station):
+                dropped.append(int(station.station_id))
+                continue
+
+            copied = self._copy_station(station)
+            if int(copied.station_id) == 7:
+                copied.station_id = shared_id
                 self.get_logger().info(
                     f"Remapped shared storage station_id 7 → {shared_id} (side={self._side})"
                 )
-        return msg
+            kept.append(copied)
+
+        if not kept:
+            self.get_logger().warning(
+                "No side-matching stations found in task; using arena_layout as-is"
+            )
+            prepared.arena_layout = [self._copy_station(st) for st in msg.arena_layout]
+            return prepared
+
+        prepared.arena_layout = kept
+        if dropped:
+            self.get_logger().info(
+                f"Filtered task for side={self._side}: kept={len(kept)}, "
+                f"dropped_station_ids={dropped}"
+            )
+        return prepared
 
     def _on_task(self, msg: Task) -> None:
         with self._exec_lock:
@@ -184,7 +262,7 @@ class PlannerNode(Node):
                 )
                 return
 
-        msg = self._remap_shared_stations(msg)
+        msg = self._prepare_task_for_side(msg)
         self.get_logger().info("Task received — planning...")
         try:
             plan = self._plan(msg)
@@ -223,8 +301,6 @@ class PlannerNode(Node):
     # ------------------------------------------------------------------
 
     def _plan(self, msg: Task) -> Plan:
-        from sml_messages.msg import Station as StationMsg
-
         _dbg: Dict[str, Any] = {}  # collects intermediate data when debug_export is enabled
 
         # Parse orders
@@ -244,7 +320,7 @@ class PlannerNode(Node):
         customer_stations = []
 
         for st in msg.arena_layout:
-            if st.station_type in (StationMsg.ST_STORAGE, StationMsg.ST_HYBRID):
+            if st.station_type in (Station.ST_STORAGE, Station.ST_HYBRID):
                 mids = [int(m) for m in st.material_ids]
                 regular = [m for m in mids if 1 <= m <= 8]
                 b1080 = [m for m in mids if 10 <= m <= 80]
@@ -268,9 +344,9 @@ class PlannerNode(Node):
                     f"Station {st.station_id}: regular={regular} "
                     f"batch_1080={b1080} batch_90={b90}"
                 )
-            if st.station_type == StationMsg.ST_WORKBENCH:
+            if st.station_type == Station.ST_WORKBENCH:
                 workbench_station_ids.append(st.station_id)
-            if st.station_type == StationMsg.ST_CUSTOMER:
+            if st.station_type == Station.ST_CUSTOMER:
                 customer_station_id = st.station_id
                 customer_stations.append(st)
 
@@ -279,7 +355,7 @@ class PlannerNode(Node):
         if customer_station_id is None:
             raise RuntimeError("No customer station in arena layout")
 
-        home_id = 14 if self._side == 'b' else 0
+        home_id = side_to_start_goal_station(self._side)
         workbench_station_id = self._select_fixed_workbench(workbench_station_ids)
         self.get_logger().info(
             f"Selected workbench station {workbench_station_id} "
@@ -495,12 +571,11 @@ class PlannerNode(Node):
         except Exception as e:
             self.get_logger().error(f"[DEBUG] Plan export failed: {e}")
 
-    @staticmethod
-    def _select_fixed_workbench(workbench_station_ids):
+    def _select_fixed_workbench(self, workbench_station_ids):
         """Prefer the official fixed assembly workbench for each arena side."""
-        for station_id in (4, 10):
-            if station_id in workbench_station_ids:
-                return station_id
+        preferred = side_to_fixed_workbench_station(self._side)
+        if preferred in workbench_station_ids:
+            return preferred
         return workbench_station_ids[0]
 
     def _check_recycle_overflow(

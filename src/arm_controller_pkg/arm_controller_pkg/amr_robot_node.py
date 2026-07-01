@@ -377,7 +377,7 @@ class AmrRobotNode(Node):
             self.robot = rb.Cobot(self.robot_ip)
             self.rc = rb.ResponseCollector()
             self.robot.set_operation_mode(self.rc, rb.OperationMode.Real)
-            self.robot.set_speed_bar(self.rc, 0.8)
+            self.robot.set_speed_bar(self.rc, 1.0) # robot_arm_speed
             self.robot.set_speed_multiplier(self.rc, 1.5)
             self.robot_ready = True
             self.get_logger().info(f'[AMR] robot connected: {self.robot_ip}')

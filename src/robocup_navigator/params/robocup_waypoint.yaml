@@ -416,7 +416,7 @@ stations:
     name: station_14
     sequence:
     - station_14_goal
-    post_process: true
+    post_process: false
   15:
     name: station_15
     sequence: []

@@ -37,6 +37,7 @@ setup(
         'console_scripts': [
             'robocup_navigator = robocup_navigator.navigator:main',
             'robocup_navigator_nav2 = robocup_navigator.navigator_nav2:main',
+            'robocup_test = robocup_navigator.robocup_test:main',
             'robocup_current_pose = robocup_navigator.current_pose:main',
             'waypoint_editor = robocup_navigator.waypoint_editor:main',
         ],

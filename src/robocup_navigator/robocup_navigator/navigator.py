@@ -47,8 +47,9 @@ class RotationProfile:
 class RobocupNavigator(Node):
     """Action server that converts station IDs into stable Nav2 sequences."""
 
-    def __init__(self):
-        super().__init__('robocup_navigator')
+    def __init__(self, node_name='robocup_navigator',
+                 enable_action_interfaces=True):
+        super().__init__(node_name)
         self._cbg = ReentrantCallbackGroup()
         self._busy_lock = Lock()
         self._busy = False
@@ -252,24 +253,29 @@ class RobocupNavigator(Node):
             qos_profile_sensor_data,
             callback_group=self._cbg,
         )
-        self._action_server = ActionServer(
-            self,
-            NavTask,
-            nav_action,
-            execute_callback=self._execute_callback,
-            goal_callback=self._goal_callback,
-            cancel_callback=self._cancel_callback,
-            callback_group=self._cbg,
-        )
-        self._post_process_srv = self.create_service(
-            Trigger,
-            post_process_service,
-            self._post_process_callback,
-            callback_group=self._cbg,
-        )
+        self._action_server = None
+        self._post_process_srv = None
+        if enable_action_interfaces:
+            self._action_server = ActionServer(
+                self,
+                NavTask,
+                nav_action,
+                execute_callback=self._execute_callback,
+                goal_callback=self._goal_callback,
+                cancel_callback=self._cancel_callback,
+                callback_group=self._cbg,
+            )
+            self._post_process_srv = self.create_service(
+                Trigger,
+                post_process_service,
+                self._post_process_callback,
+                callback_group=self._cbg,
+            )
 
         self.get_logger().info(
-            f'Robocup navigator ready: action="{nav_action}", '
+            f'Robocup navigator ready: node="{node_name}", '
+            f'action_interfaces={enable_action_interfaces}, '
+            f'action="{nav_action}", '
             f'post_process="{post_process_service}", '
             f'cmd_vel="{cmd_vel_topic}", '
             f'stations={sorted(self._stations.keys())}, scan="{scan_topic}"'
@@ -1192,6 +1198,9 @@ class RobocupNavigator(Node):
             self._publish_zero_velocity()
 
     def _publish_feedback(self, goal_handle, status: str):
+        if goal_handle is None:
+            return
+
         feedback = NavTask.Feedback()
         feedback.status = status
         goal_handle.publish_feedback(feedback)

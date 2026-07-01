@@ -26,7 +26,8 @@ In-transit assembly rule (Mod 2):
   to the customer counter — they do NOT move to cargo 1 first.
   When a slot is freed after delivery, CargoAllocator auto-assigns the next
   queued product to that slot; _start_ready_intransit_assembly() is called
-  immediately in case the new product's materials are already loaded.
+  after the customer post-process exit maneuver so assembly does not overlap
+  with backup/rotation.
 
 Two-phase navigation rule:
   Every station approach is split into two legs:
@@ -169,6 +170,7 @@ class Executor:
             pending_wb_handle = self._node.wb_task_async('RECYCLE', pid)
             pending_wb_pid = pid
             self._node.call_post_process()
+            self._start_ready_intransit_assembly()
 
             # Cargo pressure check: with several recycle products in flight,
             # cargo 2-6 can fill up with reclaimed material before it's all
@@ -188,6 +190,7 @@ class Executor:
             self._collect_recycled_materials(
                 pending_wb_handle, pending_wb_pid, workbench_id
             )
+            self._start_ready_intransit_assembly()
 
     def _collect_recycled_materials(
         self, handle, pid: int, workbench_id: int
@@ -204,7 +207,6 @@ class Executor:
                     station_id=workbench_id,
                     material_id=mat_id,
                 )
-                self._start_ready_intransit_assembly()
 
     # ------------------------------------------------------------------
     # Return surplus recycled materials to their designated storage station
@@ -278,9 +280,9 @@ class Executor:
 
                 self._log(f"  → pick mat {mat_id}")
                 self._node.arm_pick_material(station_id=sid, material_id=mat_id)
-                self._start_ready_intransit_assembly()
 
             self._node.call_post_process()
+            self._start_ready_intransit_assembly()
 
             if self._has_ready_deliveries():
                 self._deliver_all()
@@ -381,6 +383,7 @@ class Executor:
         self._node.navigate_goal(cid)
 
         # Deliver each completed in-transit slot directly from cargo 7/8.
+        queued_new_product = False
         for slot in list(self._allocator.get_completed_slots()):
             self._log(
                 f"  → deliver product {slot.product_id} from cargo {slot.cargo_id}"
@@ -395,10 +398,11 @@ class Executor:
                 self._log(
                     f"  [QUEUE] product {newly_queued} now allocated to cargo {slot.cargo_id}"
                 )
-                # Materials for newly_queued may already be loaded — check immediately.
-                self._start_ready_intransit_assembly()
+                queued_new_product = True
 
         self._node.call_post_process()
+        if queued_new_product:
+            self._start_ready_intransit_assembly()
 
     # ------------------------------------------------------------------
     # Return to home

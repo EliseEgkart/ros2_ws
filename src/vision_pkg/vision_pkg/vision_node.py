@@ -7,6 +7,7 @@ from arm_interfaces.srv import GetTargetPose
 from vision_pkg.vision_6d_manager import (
     BRICK_IDS,
     COMPONENT_IDS,
+    EMPTY_SPACE_ID,
     COMP_MODEL_PATH,
     DET_MODEL_PATH,
     ID_TO_CLASS,
@@ -97,6 +98,15 @@ class VisionNode(Node):
                     f'[VISION] branch=COMPONENT single-frame 777-style axis pipeline, ID={target_id}, class={ID_TO_CLASS.get(target_id)}'
                 )
                 result = self.vision.run_single_frame_component_by_id(
+                    target_id=target_id,
+                    visualize=service_visualize,
+                    wait_ms=wait_ms,
+                )
+            elif target_id == EMPTY_SPACE_ID:
+                self.get_logger().info(
+                    f'[VISION] branch=empty space single-frame 777-style axis pipeline, ID={target_id}, class={ID_TO_CLASS.get(target_id)}'
+                )
+                result = self.vision.run_single_frame_empty_space_by_id(
                     target_id=target_id,
                     visualize=service_visualize,
                     wait_ms=wait_ms,

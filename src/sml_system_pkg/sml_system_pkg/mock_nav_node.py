@@ -19,7 +19,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
-from sml_msgs.action import NavTask
+from robocup_pkg.action import NavTask
 
 from sml_system_pkg.arena_side_utils import (
     amr_station_to_planner_station,

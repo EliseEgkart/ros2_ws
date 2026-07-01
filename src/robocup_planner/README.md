@@ -34,12 +34,12 @@ RoboCup SML 경기용 계획·실행 통합 노드.
 
 | 방향 | 인터페이스 | 타입 | 설명 |
 |---|---|---|---|
-| Sub | `/sml/task` | `sml_msgs/msg/Task` | 주문 수신 트리거 |
+| Sub | `/sml/task` | `sml_messages/msg/Task` | 주문 수신 트리거 |
 | Sub | `/workbench/product_ready` | `std_msgs/Int32` | 워크벤치 완료 신호 |
-| Act | `navigate_to_station` | `sml_msgs/action/NavTask` | AMR 이동 |
+| Act | `navigate_to_station` | `robocup_pkg/action/NavTask` | AMR 이동 |
 | Srv | `/robocup_navigator/post_process` | `std_srvs/srv/Trigger` | station 작업 후 후진/회전 이탈 |
-| Act | `wb_task` | `sml_msgs/action/WbTask` | 워크벤치 조립/분해 |
-| Srv | `/amr_robot_command` | `sml_msgs/srv/ArmCommand` | 로봇팔 제어 |
+| Act | `wb_task` | `robocup_pkg/action/WbTask` | 워크벤치 조립/분해 |
+| Srv | `/amr_robot_command` | `robocup_pkg/srv/ArmCommand` | 로봇팔 제어 |
 
 ---
 
@@ -90,7 +90,7 @@ cargo 7/8에는 `is_intransit_eligible` 조건을 만족하는 제품만 할당�
 
 ```bash
 # 빌드
-colcon build --packages-select sml_msgs sml_system_pkg robocup_planner
+colcon build --packages-select sml_messages robocup_pkg sml_system_pkg robocup_planner
 source install/setup.bash
 
 # 시뮬레이션 (mock 노드 포함 전체 스택)
@@ -142,12 +142,12 @@ robocup_planner/
 ros2 topic echo /sml/task --once
 
 # 내비게이션 액션 단독 테스트 (sub_goal)
-ros2 action send_goal /navigate_to_station sml_msgs/action/NavTask "{station_id: -2}" --feedback
+ros2 action send_goal /navigate_to_station robocup_pkg/action/NavTask "{station_id: -2}" --feedback
 
 # 내비게이션 액션 단독 테스트 (goal)
-ros2 action send_goal /navigate_to_station sml_msgs/action/NavTask "{station_id: 2}" --feedback
+ros2 action send_goal /navigate_to_station robocup_pkg/action/NavTask "{station_id: 2}" --feedback
 
 # 로봇팔 서비스 단독 테스트
-ros2 service call /amr_robot_command sml_msgs/srv/ArmCommand \
+ros2 service call /amr_robot_command robocup_pkg/srv/ArmCommand \
   "{action: 'LOAD', object_ids: [1], location: 1, station_id: 1, slide_ids: []}"
 ```

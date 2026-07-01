@@ -16,4 +16,3 @@ int32[] object_ids
 int32[] slide_ids
 int32   station_id
 int32[] depends_on
-

@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>sml_msgs</name>
+  <name>robocup_pkg</name>
   <version>0.0.1</version>
-  <description>Plan D interfaces for RoboCup SML communication.</description>
+  <description>Internal RoboCup interfaces for planning, navigation, workbench, and arm control.</description>
   <maintainer email="todo@todo.com">todo</maintainer>
   <license>TODO</license>
 

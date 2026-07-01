@@ -13,7 +13,7 @@ Example:
         '/home/st02/ros2_ws/src/sml_system_pkg/config/robocup_waypoint.yaml'
     )
 
-    # task is sml_msgs/msg/Task or compatible object.
+    # task is sml_messages/msg/Task or compatible object.
     gui_data = map_source.build_from_task(task)
 
     # gui_data['stations'][i] contains:

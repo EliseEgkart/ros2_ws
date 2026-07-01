@@ -26,7 +26,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
-from sml_msgs.srv import ArmCommand
+from robocup_pkg.srv import ArmCommand
 
 
 PRODUCT_MATERIALS = {

@@ -6,11 +6,11 @@ reactive executor in a background thread while the ROS2 node spins
 normally in the main thread.
 
 Interfaces:
-  Sub  /sml/task              sml_msgs/Task         — task definition
+  Sub  /sml/task              sml_messages/Task     — task definition
   Sub  <wb_ready_topic>       std_msgs/Int32         — workbench product_id ready
-  Act  navigate_to_station    sml_msgs/NavTask       — navigate to station
-  Act  wb_task                sml_msgs/WbTask        — workbench work
-  Srv  /amr_robot_command     sml_msgs/ArmCommand    — arm pick/place
+  Act  navigate_to_station    robocup_pkg/NavTask    — navigate to station
+  Act  wb_task                robocup_pkg/WbTask     — workbench work
+  Srv  /amr_robot_command     robocup_pkg/ArmCommand — arm pick/place
 
 Blocking helper methods (navigate, arm_*, wb_task) are called from the
 executor thread and use threading.Event to wait for ROS2 async results.
@@ -35,9 +35,9 @@ TASK_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
 )
 
-from sml_msgs.action import NavTask, WbTask
-from sml_msgs.msg import Task
-from sml_msgs.srv import ArmCommand
+from robocup_pkg.action import NavTask, WbTask
+from robocup_pkg.srv import ArmCommand
+from sml_messages.msg import Task
 from std_msgs.msg import Int32
 from std_srvs.srv import Trigger
 
@@ -223,7 +223,7 @@ class PlannerNode(Node):
     # ------------------------------------------------------------------
 
     def _plan(self, msg: Task) -> Plan:
-        from sml_msgs.msg import Station as StationMsg
+        from sml_messages.msg import Station as StationMsg
 
         _dbg: Dict[str, Any] = {}  # collects intermediate data when debug_export is enabled
 

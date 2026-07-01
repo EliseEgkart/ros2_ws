@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """SML order_server.
 
-공식 예시 task builder 형식을 유지하면서 기존 sml_msgs / sml_system_pkg 구조에 맞춰
+공식 예시 task builder 형식을 유지하면서 sml_messages / sml_system_pkg 구조에 맞춰
 /sml/task 로 Task를 발행하는 노드.
 
 주요 정책
-- station_name은 공식 이름(side_a_storage_1 등)을 유지한다.
+- name은 공식 station 이름(side_a_storage_1 등)을 유지한다.
 - 선택한 start_side에 따라 A면 station_id 1,2,3,4,6,7 / B면 station_id 7,8,10,11,12,13으로 발행한다.
 - start/goal은 A면 0, B면 14이다.
 - 공식 Beginner preset의 batch ID(10, 30, 40 등)는 그대로 유지한다.
@@ -22,7 +22,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
-from sml_msgs.msg import Order, Station, Task
+from sml_messages.msg import Order, Station, Task
 
 
 TASK_QOS = QoSProfile(
@@ -144,17 +144,17 @@ def side_prefix(side: str) -> str:
     return "side_a" if normalize_side(side) == "a" else "side_b"
 
 
-def make_order(order_type: int, _name: str, product_id: int) -> Order:
-    """Order.msg에는 name 필드가 없으므로 _name은 출력/호환 목적 인자다."""
+def make_order(order_type: int, name: str, product_id: int) -> Order:
     order = Order()
     order.order_type = int(order_type)
+    order.name = name
     order.product_id = int(product_id)
     return order
 
 
-def make_station(station_name: str, station_type: int, station_id: int, material_ids: Sequence[int]) -> Station:
+def make_station(name: str, station_type: int, station_id: int, material_ids: Sequence[int]) -> Station:
     station = Station()
-    station.station_name = station_name
+    station.name = name
     station.station_type = int(station_type)
     station.station_id = int(station_id)
     station.material_ids = [int(x) for x in material_ids]
@@ -175,7 +175,7 @@ def fill_task(orders: Sequence[Order], material_map: Dict[str, Sequence[int]], s
         station_id = side_a_id if side == "a" else side_b_id
         task.arena_layout.append(
             make_station(
-                station_name=name,
+                name=name,
                 station_type=station_type,
                 station_id=station_id,
                 material_ids=materials,
@@ -735,7 +735,7 @@ class OrderServer(Node):
             print(
                 f"   station_type = {station.station_type}; "
                 f"station_id = {station.station_id}; "
-                f"station_name = {station.station_name}; "
+                f"name = {station.name}; "
                 f"material_ids = {{{material_text}}}"
             )
         print("}\n")

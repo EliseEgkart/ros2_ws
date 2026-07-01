@@ -1,4 +1,4 @@
-from sml_msgs.msg import Station
+from sml_messages.msg import Station
 
 from sml_system_pkg.arena_side_utils import (
     _A_TO_B,

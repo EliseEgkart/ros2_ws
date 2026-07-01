@@ -14,7 +14,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
-from sml_msgs.action import WbTask
+from robocup_pkg.action import WbTask
 
 from sml_system_pkg.planning.planner_config import (
     PRODUCT_MATERIALS,

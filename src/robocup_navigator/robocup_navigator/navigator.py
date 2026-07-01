@@ -24,7 +24,7 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
-from sml_msgs.action import NavTask
+from robocup_pkg.action import NavTask
 
 
 class StationProfile:

@@ -1,7 +1,7 @@
 """Plan D planner core.
 
 This module is intentionally separate from the old WB-centered planner.
-It generates `sml_msgs/Step` with AMR internal `slide_ids`.
+It generates `robocup_pkg/Step` with AMR internal `slide_ids`.
 """
 
 from __future__ import annotations
@@ -9,7 +9,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Optional
 
-from sml_msgs.msg import Order, Station, Step
+from robocup_pkg.msg import Step
+from sml_messages.msg import Order, Station
 
 from .planner_config import (
     AMR_CAPABLE_PRODUCTS,
@@ -55,7 +56,7 @@ class _NullLogger:
 
 
 class PlannerCore:
-    """Build a Plan D step sequence from a `sml_msgs/Task`."""
+    """Build a Plan D step sequence from a `sml_messages/Task`."""
 
     def __init__(
         self,

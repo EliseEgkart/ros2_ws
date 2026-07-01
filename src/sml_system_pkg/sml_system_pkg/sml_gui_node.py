@@ -38,8 +38,9 @@ from typing import Dict, List, Optional, Tuple
 import rclpy
 from rclpy.node import Node
 
-from sml_msgs.msg import Task, Step
-from sml_msgs.srv import GetPlan
+from robocup_pkg.msg import Step
+from robocup_pkg.srv import GetPlan
+from sml_messages.msg import Task
 
 from .arena_side_utils import (
     amr_station_to_planner_station,
@@ -167,7 +168,7 @@ class VirtualState:
         for st in task.arena_layout:
             sid = int(st.station_id)
             self.station_items[sid] = list(getattr(st, "material_ids", []))
-            self.station_names[sid] = getattr(st, "station_name", f"station_{sid}") or f"station_{sid}"
+            self.station_names[sid] = getattr(st, "name", f"station_{sid}") or f"station_{sid}"
             self.station_types[sid] = int(st.station_type)
             for obj in list(getattr(st, "material_ids", [])):
                 if int(obj) in BATCH_TO_RAW:

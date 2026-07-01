@@ -5,7 +5,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from arm_interfaces.srv import Cargo, GetTargetPose
-from sml_msgs.srv import ArmCommand
+from robocup_pkg.srv import ArmCommand
 from std_srvs.srv import Trigger
 import rbpodo as rb
 import numpy as np

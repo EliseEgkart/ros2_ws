@@ -1,4 +1,5 @@
-from sml_msgs.msg import Order, Station, Step, Task
+from robocup_pkg.msg import Step
+from sml_messages.msg import Order, Station, Task
 
 from sml_system_pkg.planning.planner_core import PlannerCore
 

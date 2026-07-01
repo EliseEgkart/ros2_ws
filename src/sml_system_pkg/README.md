@@ -24,7 +24,7 @@ RoboCup SML 공용 인프라 패키지.
 ```bash
 cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select sml_msgs sml_system_pkg robocup_planner
+colcon build --packages-select sml_messages robocup_pkg sml_system_pkg robocup_planner
 source install/setup.bash
 ```
 

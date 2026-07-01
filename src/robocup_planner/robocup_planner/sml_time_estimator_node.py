@@ -35,7 +35,8 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import ColorRGBA, Header, String
 from visualization_msgs.msg import Marker, MarkerArray
 
-from sml_msgs.msg import Station, Step, Task
+from robocup_pkg.msg import Step
+from sml_messages.msg import Station, Task
 
 from sml_system_pkg.arena_side_utils import (
     normalize_side,

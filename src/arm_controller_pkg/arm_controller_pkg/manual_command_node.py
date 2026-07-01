@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from sml_msgs.srv import ArmCommand
+from robocup_pkg.srv import ArmCommand
 
 
 class ManualCommandNode(Node):

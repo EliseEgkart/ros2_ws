@@ -1,4 +1,4 @@
-image: robocup_map.pgm
+image: robocup_map_0702.pgm
 mode: trinary
 resolution: 0.03
 origin: [-10.7, -15.1, 0]

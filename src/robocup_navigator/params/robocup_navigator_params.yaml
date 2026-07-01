@@ -86,7 +86,7 @@ robocup_navigator:
 
     # cmd_vel 회전 이탈 중 angular.z에 적용할 속도.
     # navigator_nav2.py에서는 유효성 검사용 값이고 실제 회전 속도 제한은 Nav2가 결정한다.
-    rotate_angular_speed: 2.8
+    rotate_angular_speed: 2.0
     rotate_timeout_sec: 8.0
 
     # navigator 액션 대기/폴링 루프에서 사용하는 sleep 주기.

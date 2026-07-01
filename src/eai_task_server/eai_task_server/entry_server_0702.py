@@ -67,7 +67,7 @@ class EntryServer0702Node(Node):
         self.declare_parameter('side_a_topic_name', '/eai/task/side_a')
         self.declare_parameter('side_b_topic_name', '/eai/task/side_b')
         self.declare_parameter('publish_period_sec', 1.0)
-        self.declare_parameter('publish_once', False)
+        self.declare_parameter('publish_once', True)
 
         topic_name = self.get_parameter('topic_name').get_parameter_value().string_value
         side_a_topic_name = self.get_parameter('side_a_topic_name').get_parameter_value().string_value

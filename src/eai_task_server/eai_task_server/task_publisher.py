@@ -219,27 +219,19 @@ def build_recycling_advanced_task() -> Task:
     )
 
 def build_lifecycle_advanced_task() -> Task:
-    # Exercises both recycle paths in one task:
-    #  - recycle_magnet(13): also being produced this run, and there is no
-    #    initial customer stock for it — the robot must assemble it, deliver
-    #    it, then pick it back up for disassembly (deferred recycle path).
-    #  - recycle_estop(81): pre-stocked on the customer counter (not being
-    #    produced this run) — recycled immediately in Phase 1, as before.
     orders = [
-        make_order(Order.OT_PRODUCE, 'la_produce_magnet', 13),
-        make_order(Order.OT_PRODUCE, 'la_produce_battery', 34),
-        make_order(Order.OT_RECYCLE, 'la_recycle_magnet_deferred', 13),
-        make_order(Order.OT_RECYCLE, 'la_recycle_estop_immediate', 81),
+        make_order(Order.OT_PRODUCE, 'la_prod_1', 2),
+        make_order(Order.OT_PRODUCE, 'la_prod_2', 3),
+        make_order(Order.OT_RECYCLE, 'la_recycle_1', 2),
+        make_order(Order.OT_RECYCLE, 'la_recycle_2', 4),
     ]
     return fill_task(
         orders,
         {
-            'side_a_storage_1': [1, 3],
-            'side_a_storage_2': [3, 4],
-            'side_a_customer_1': [81],
-            'side_b_storage_1': [1, 3],
-            'side_b_storage_2': [3, 4],
-            'side_b_customer_1': [81],
+            'side_a_storage_1': [1, 2, 3],
+            'side_a_storage_2': [4, 5],
+            'side_b_storage_1': [2, 3, 4],
+            'side_b_storage_2': [5, 6],
         },
     )
 

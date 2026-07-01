@@ -21,7 +21,7 @@ import os
 import threading
 from collections import Counter
 from datetime import datetime
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 import rclpy
 from rclpy.action import ActionClient
@@ -422,29 +422,9 @@ class PlannerNode(Node):
                 ],
             }
 
-        # A recycle order can only be picked up "cold" (before anything else
-        # happens) if that product is physically sitting on the customer
-        # counter in the initial arena state. When the same product id is
-        # also being produced this run (the "lifecycle" case) and no such
-        # initial stock exists, there is nothing to disassemble yet — the
-        # robot must assemble it, deliver it to the customer, and only then
-        # pick it back up for disassembly. Split recycle orders accordingly.
-        customer_initial_products = {
-            int(m) for st in customer_stations for m in st.material_ids
-        }
-        recycle_immediate_ids = [pid for pid in recycle_ids if pid in customer_initial_products]
-        recycle_deferred_ids = [pid for pid in recycle_ids if pid not in customer_initial_products]
-        if recycle_deferred_ids:
-            self.get_logger().info(
-                f"Recycle orders with no initial customer stock (produce-then-recycle): "
-                f"{recycle_deferred_ids} — deferred until after delivery"
-            )
-
-        # Compute aidlist and net_aidlist (only immediately-available recycling
-        # is subtracted — deferred recycling happens after production, so it
-        # must not reduce the materials fetched for production itself).
+        # Compute aidlist and net_aidlist (recycling already subtracted)
         aidlist, net_aidlist, recycled_materials = compute_net_aidlist(
-            produce_ids, recycle_immediate_ids
+            produce_ids, recycle_ids
         )
         self.get_logger().info(
             f"aidlist={dict(aidlist)}, net_aidlist={dict(net_aidlist)}"
@@ -453,8 +433,8 @@ class PlannerNode(Node):
         # Simulate Phase 1 recycle disassembly to detect cargo overflow at plan time.
         # Materials that would overflow and are still needed get added back to
         # net_aidlist so they are fetched from storage instead of lost silently.
-        if recycle_immediate_ids:
-            overflow_needed = self._check_recycle_overflow(recycle_immediate_ids, net_aidlist)
+        if recycle_ids:
+            overflow_needed = self._check_recycle_overflow(recycle_ids, net_aidlist)
             if overflow_needed:
                 net_aidlist += overflow_needed
                 self.get_logger().info(
@@ -530,16 +510,13 @@ class PlannerNode(Node):
                 f"Cannot satisfy aidlist — missing: {dict(missing)}"
             )
 
-        # Phase 1 (customer-counter-first) recycling is only triggered for
-        # products that already have stock sitting at the customer counter.
-        needs_recycling = bool(recycle_immediate_ids)
+        # Recycling is always triggered when recycle orders exist
+        needs_recycling = bool(recycle_ids)
 
-        # Build recycle orders (map each immediately-recyclable product to the
-        # customer station). Deferred recycle orders are handled after
-        # delivery instead (see Plan.deferred_recycle_ids / Executor).
+        # Build recycle orders (map each recycle product to the customer station)
         recycle_orders = [
             {'station_id': customer_station_id, 'product_id': pid}
-            for pid in recycle_immediate_ids
+            for pid in recycle_ids
         ]
 
         # Build full midlist with batch support
@@ -608,7 +585,6 @@ class PlannerNode(Node):
             surplus_recycled=surplus,
             material_home_station=material_home_station,
             product_weights=self._product_weights,
-            deferred_recycle_ids=recycle_deferred_ids,
         )
 
         self.get_logger().info(
@@ -717,11 +693,7 @@ class PlannerNode(Node):
     # Blocking helpers called by Executor (run in executor thread)
     # ------------------------------------------------------------------
 
-    def navigate(
-        self,
-        station_id: int,
-        on_accepted: Optional[Callable[[], None]] = None,
-    ) -> bool:
+    def navigate(self, station_id: int) -> bool:
         """Navigate directly to station_id goal (positive) or sub_goal (negative)."""
         self._nav_client.wait_for_server()
 
@@ -739,13 +711,6 @@ class PlannerNode(Node):
                 self.get_logger().error(f"NavTask goal rejected for station {station_id}")
                 done.set()
                 return
-            if on_accepted is not None:
-                try:
-                    on_accepted()
-                except Exception as exc:
-                    self.get_logger().error(
-                        f"Navigation accepted callback failed: {exc}"
-                    )
             gh.get_result_async().add_done_callback(_result_cb)
 
         goal = NavTask.Goal()
@@ -792,30 +757,22 @@ class PlannerNode(Node):
         )
         return True
 
-    def navigate_subgoal(
-        self,
-        station_id: int,
-        on_accepted: Optional[Callable[[], None]] = None,
-    ) -> bool:
+    def navigate_subgoal(self, station_id: int) -> bool:
         """Navigate to the sub_goal (approach) position of station_id.
 
         Convention: negative station_id signals the nav server to stop at
         the sub_goal waypoint (station_N_sub_goal) instead of the docking goal.
         """
         self.get_logger().info(f"[NAV] → sub_goal of station {station_id}")
-        return self.navigate(-abs(station_id), on_accepted=on_accepted)
+        return self.navigate(-abs(station_id))
 
-    def navigate_goal(
-        self,
-        station_id: int,
-        on_accepted: Optional[Callable[[], None]] = None,
-    ) -> bool:
+    def navigate_goal(self, station_id: int) -> bool:
         """Navigate the final leg from sub_goal to the docking goal of station_id.
 
         No arm assembly should occur during this phase (precision parking).
         """
         self.get_logger().info(f"[NAV] → goal of station {station_id}")
-        return self.navigate(abs(station_id), on_accepted=on_accepted)
+        return self.navigate(abs(station_id))
 
     def arm_assemble_intransit_async(
         self, product_id: int, cargo_id: int

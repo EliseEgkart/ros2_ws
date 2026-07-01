@@ -155,10 +155,10 @@ PICK_OFFSET = {
     2: {},  # 2x2_green
     3: {},  # 2x2_blue
     4: {},  # 2x2_yellow
-    5: {},  # 4x2_red
-    6: {},  # 4x2_green
-    7: {},  # 4x2_blue
-    8: {},  # 4x2_yellow
+    5: {'yaw': -90.0},  # 4x2_red
+    6: {'yaw': -90.0},  # 4x2_green
+    7: {'yaw': -90.0},  # 4x2_blue
+    8: {'yaw': -90.0},  # 4x2_yellow
     # --- Products ---
     34:    {},               # battery
     13:    {},               # magnet

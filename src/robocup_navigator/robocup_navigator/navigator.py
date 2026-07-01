@@ -193,8 +193,16 @@ class RobocupNavigator(Node):
             default_param('backup_speed', 0.14),
         )
         self.declare_parameter(
+            'backup_accel_limit',
+            default_param('backup_accel_limit', 0.30),
+        )
+        self.declare_parameter(
             'backup_timeout_sec',
             default_param('backup_timeout_sec', 5.0),
+        )
+        self.declare_parameter(
+            'post_backup_settle_sec',
+            default_param('post_backup_settle_sec', 0.20),
         )
 
         self.declare_parameter(
@@ -204,6 +212,10 @@ class RobocupNavigator(Node):
         self.declare_parameter(
             'rotate_angular_speed',
             default_param('rotate_angular_speed', 1.4),
+        )
+        self.declare_parameter(
+            'rotate_angular_accel_limit',
+            default_param('rotate_angular_accel_limit', 1.50),
         )
         self.declare_parameter(
             'rotate_timeout_sec',
@@ -369,8 +381,14 @@ class RobocupNavigator(Node):
             self.get_parameter('backup_distance').value
         )
         self._backup_speed = float(self.get_parameter('backup_speed').value)
+        self._backup_accel_limit = float(
+            self.get_parameter('backup_accel_limit').value
+        )
         self._backup_timeout_sec = float(
             self.get_parameter('backup_timeout_sec').value
+        )
+        self._post_backup_settle_sec = float(
+            self.get_parameter('post_backup_settle_sec').value
         )
         self._rotate_after_backup = bool(
             self.get_parameter('rotate_after_backup').value
@@ -378,6 +396,9 @@ class RobocupNavigator(Node):
 
         self._rotate_angular_speed = float(
             self.get_parameter('rotate_angular_speed').value
+        )
+        self._rotate_angular_accel_limit = float(
+            self.get_parameter('rotate_angular_accel_limit').value
         )
         self._rotate_timeout_sec = float(
             self.get_parameter('rotate_timeout_sec').value
@@ -943,22 +964,23 @@ class RobocupNavigator(Node):
             )
         self.get_logger().info(
             f'[BACKUP START] distance={self._backup_distance:.3f} m, '
-            f'speed={self._backup_speed:.3f} m/s'
+            f'speed={self._backup_speed:.3f} m/s, '
+            f'accel_limit={self._backup_accel_limit:.3f} m/s^2'
         )
 
-        duration_sec = abs(self._backup_distance) / abs(self._backup_speed)
-        duration_sec = self._limit_motion_duration(
-            duration_sec,
+        if not self._publish_linear_motion_profile(
+            -abs(self._backup_distance),
+            abs(self._backup_speed),
+            self._backup_accel_limit,
             self._backup_timeout_sec,
             'BACKUP',
-        )
-        if not self._publish_velocity_for_duration(
-            -abs(self._backup_speed),
-            0.0,
-            duration_sec,
             goal_handle,
         ):
             return False, 'CANCELED'
+
+        if self._post_backup_settle_sec > 0.0:
+            self._publish_zero_velocity()
+            time.sleep(self._post_backup_settle_sec)
 
         self.get_logger().info('[BACKUP DONE]')
         return True, ''
@@ -1005,26 +1027,22 @@ class RobocupNavigator(Node):
         self.get_logger().info(
             f'[ROTATE START] waypoint={waypoint_name}, '
             f'direction={rotation_profile.direction}, '
-            f'angle={rotation_profile.angle_deg:.1f} deg'
+            f'angle={rotation_profile.angle_deg:.1f} deg, '
+            f'speed={self._rotate_angular_speed:.3f} rad/s, '
+            f'accel_limit={self._rotate_angular_accel_limit:.3f} rad/s^2'
         )
 
         if rotation_profile.direction == 'clockwise':
-            angular_z = -abs(self._rotate_angular_speed)
+            angle_rad = -abs(rotation_profile.angle_rad)
         else:
-            angular_z = abs(self._rotate_angular_speed)
+            angle_rad = abs(rotation_profile.angle_rad)
 
-        duration_sec = (
-            abs(rotation_profile.angle_rad) / abs(self._rotate_angular_speed)
-        )
-        duration_sec = self._limit_motion_duration(
-            duration_sec,
+        if not self._publish_angular_motion_profile(
+            angle_rad,
+            abs(self._rotate_angular_speed),
+            self._rotate_angular_accel_limit,
             self._rotate_timeout_sec,
             'ROTATE',
-        )
-        if not self._publish_velocity_for_duration(
-            0.0,
-            angular_z,
-            duration_sec,
             goal_handle,
         ):
             return False, 'CANCELED'
@@ -1173,6 +1191,152 @@ class RobocupNavigator(Node):
             return timeout_sec
 
         return max(0.0, duration_sec)
+
+    def _motion_profile_segments(self, distance: float, max_speed: float,
+                                 accel_limit: float, label: str):
+        distance = abs(float(distance))
+        max_speed = abs(float(max_speed))
+        accel_limit = abs(float(accel_limit))
+
+        if distance <= 0.0 or max_speed <= 0.0:
+            return 0.0, 0.0, 0.0, 0.0
+
+        if accel_limit <= 0.0:
+            self.get_logger().warn(
+                f'[{label}] accel_limit <= 0.0; using constant velocity.'
+            )
+            return 0.0, distance / max_speed, 0.0, max_speed
+
+        full_ramp_time = max_speed / accel_limit
+        full_ramp_distance = 0.5 * accel_limit * full_ramp_time ** 2
+
+        if 2.0 * full_ramp_distance >= distance:
+            peak_speed = math.sqrt(distance * accel_limit)
+            ramp_time = peak_speed / accel_limit
+            cruise_time = 0.0
+        else:
+            peak_speed = max_speed
+            ramp_time = full_ramp_time
+            cruise_distance = distance - 2.0 * full_ramp_distance
+            cruise_time = cruise_distance / peak_speed
+
+        total_time = 2.0 * ramp_time + cruise_time
+        return ramp_time, cruise_time, total_time, peak_speed
+
+    def _profile_speed_at(self, elapsed: float, ramp_time: float,
+                          cruise_time: float, total_time: float,
+                          peak_speed: float) -> float:
+        if total_time <= 0.0:
+            return 0.0
+
+        if ramp_time <= 0.0:
+            return peak_speed
+
+        if elapsed < ramp_time:
+            return peak_speed * elapsed / ramp_time
+
+        cruise_end = ramp_time + cruise_time
+        if elapsed < cruise_end:
+            return peak_speed
+
+        remaining = max(0.0, total_time - elapsed)
+        return peak_speed * remaining / ramp_time
+
+    def _publish_linear_motion_profile(self, distance: float, max_speed: float,
+                                       accel_limit: float, timeout_sec: float,
+                                       label: str, goal_handle) -> bool:
+        sign = 1.0 if distance >= 0.0 else -1.0
+        ramp_time, cruise_time, total_time, peak_speed = (
+            self._motion_profile_segments(
+                distance,
+                max_speed,
+                accel_limit,
+                label,
+            )
+        )
+        duration_sec = self._limit_motion_duration(
+            total_time,
+            timeout_sec,
+            label,
+        )
+        return self._publish_profiled_velocity(
+            duration_sec,
+            ramp_time,
+            cruise_time,
+            total_time,
+            peak_speed,
+            sign,
+            True,
+            goal_handle,
+        )
+
+    def _publish_angular_motion_profile(self, angle_rad: float,
+                                        max_angular_speed: float,
+                                        accel_limit: float,
+                                        timeout_sec: float, label: str,
+                                        goal_handle) -> bool:
+        sign = 1.0 if angle_rad >= 0.0 else -1.0
+        ramp_time, cruise_time, total_time, peak_speed = (
+            self._motion_profile_segments(
+                angle_rad,
+                max_angular_speed,
+                accel_limit,
+                label,
+            )
+        )
+        duration_sec = self._limit_motion_duration(
+            total_time,
+            timeout_sec,
+            label,
+        )
+        return self._publish_profiled_velocity(
+            duration_sec,
+            ramp_time,
+            cruise_time,
+            total_time,
+            peak_speed,
+            sign,
+            False,
+            goal_handle,
+        )
+
+    def _publish_profiled_velocity(self, duration_sec: float,
+                                   ramp_time: float, cruise_time: float,
+                                   total_time: float, peak_speed: float,
+                                   sign: float, linear: bool,
+                                   goal_handle) -> bool:
+        start = time.monotonic()
+        deadline = start + duration_sec
+
+        try:
+            while rclpy.ok():
+                if goal_handle is not None and goal_handle.is_cancel_requested:
+                    return False
+
+                now = time.monotonic()
+                remaining = deadline - now
+                if remaining <= 0.0:
+                    return True
+
+                elapsed = now - start
+                speed = sign * self._profile_speed_at(
+                    elapsed,
+                    ramp_time,
+                    cruise_time,
+                    total_time,
+                    peak_speed,
+                )
+                cmd = Twist()
+                if linear:
+                    cmd.linear.x = speed
+                else:
+                    cmd.angular.z = speed
+                self._cmd_vel_pub.publish(cmd)
+                time.sleep(min(self._motion_period_sec, remaining))
+
+            return False
+        finally:
+            self._publish_zero_velocity()
 
     def _publish_velocity_for_duration(self, linear_x: float, angular_z: float,
                                        duration_sec: float, goal_handle) -> bool:

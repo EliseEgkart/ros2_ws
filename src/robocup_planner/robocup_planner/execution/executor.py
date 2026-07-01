@@ -55,6 +55,11 @@ class Plan:
     surplus_recycled: Dict[int, int] = field(default_factory=dict)
     material_home_station: Dict[int, int] = field(default_factory=dict)
     product_weights: Dict[int, float] = field(default_factory=dict)
+    # Product ids that are both produced and recycled this run, with no
+    # matching stock on the customer counter at plan time. These must be
+    # assembled, delivered, then picked back up for disassembly — handled by
+    # Executor._run_deferred_recycle_phase() after normal delivery.
+    deferred_recycle_ids: List[int] = field(default_factory=list)
 
 
 class ExecutionFailure(RuntimeError):
@@ -106,6 +111,12 @@ class Executor:
         # Final delivery of anything remaining
         self._wait_for_intransit_assembly()
         self._deliver_all()
+
+        # Products that were produced and delivered this run but also need
+        # to be recycled (no initial customer stock existed to recycle from
+        # up front): pick them back up from the customer counter now that
+        # they've been delivered, disassemble, and return materials home.
+        self._run_deferred_recycle_phase()
 
         # Return to home station (0 for A-side, 14 for B-side)
         self._return_to_home()
@@ -209,6 +220,70 @@ class Executor:
                 )
 
     # ------------------------------------------------------------------
+    # Deferred recycle — produce-then-recycle products with no initial
+    # customer-counter stock (run after delivery, before returning home)
+    # ------------------------------------------------------------------
+
+    def _run_deferred_recycle_phase(self) -> None:
+        """Recycle products that had to be assembled and delivered first.
+
+        These share a product id with a produce order, but had no matching
+        stock on the customer counter at plan time — so there was nothing
+        to disassemble in Phase 1. Now that the freshly-assembled product
+        has been delivered to the customer, pick it back up, disassemble it
+        at the workbench, and return every reclaimed material directly to
+        its home storage station (production is already done, so nothing
+        else needs these materials).
+        """
+        deferred_ids = self._plan.deferred_recycle_ids
+        if not deferred_ids:
+            return
+
+        self._log(f"Deferred recycle phase: {len(deferred_ids)} product(s)")
+        customer_id = self._plan.customer_station_id
+        workbench_id = self._plan.workbench_station_id
+
+        for pid in deferred_ids:
+            self._log(f"  → navigate to customer station {customer_id} to reclaim product {pid}")
+            self._node.navigate_subgoal(customer_id)
+            self._wait_for_intransit_assembly()
+            self._node.navigate_goal(customer_id)
+            self._node.arm_pick_product(station_id=customer_id, product_id=pid)
+            self._node.call_post_process()
+
+            self._log(f"  → navigate to workbench {workbench_id} for RECYCLE")
+            self._node.navigate_goal(workbench_id)
+            self._node.arm_unload_product_to_workbench(
+                product_id=pid,
+                station_id=workbench_id,
+            )
+            handle = self._node.wb_task_async('RECYCLE', pid)
+            self._collect_recycled_materials(handle, pid, workbench_id)
+            self._node.call_post_process()
+
+            self._return_materials_to_storage(get_material_count(pid))
+
+    def _return_materials_to_storage(self, materials: Dict[int, int]) -> None:
+        """Return the given {material_id: count} to their home storage stations."""
+        by_station: Dict[int, List[int]] = {}
+        for mat_id, cnt in materials.items():
+            station_id = self._plan.material_home_station.get(
+                mat_id, self._plan.workbench_station_id
+            )
+            by_station.setdefault(station_id, []).extend([mat_id] * cnt)
+
+        for station_id, mat_ids in by_station.items():
+            self._log(f"  → navigate to storage {station_id} to return {mat_ids}")
+            self._node.navigate_subgoal(station_id)
+            self._wait_for_intransit_assembly()
+            self._node.navigate_goal(station_id)
+            for mat_id in mat_ids:
+                self._node.arm_return_material_to_storage(
+                    material_id=mat_id, station_id=station_id
+                )
+            self._node.call_post_process()
+
+    # ------------------------------------------------------------------
     # Return surplus recycled materials to their designated storage station
     # ------------------------------------------------------------------
 
@@ -224,25 +299,8 @@ class Executor:
         if not surplus:
             return
 
-        # Group by destination station so each station is visited once.
-        by_station: Dict[int, List[int]] = {}
-        for mat_id, cnt in surplus.items():
-            station_id = self._plan.material_home_station.get(
-                mat_id, self._plan.workbench_station_id
-            )
-            by_station.setdefault(station_id, []).extend([mat_id] * cnt)
-
         self._log(f"Returning surplus recycled materials: {surplus}")
-        for station_id, mat_ids in by_station.items():
-            self._log(f"  → navigate to storage {station_id} to return {mat_ids}")
-            self._node.navigate_subgoal(station_id)
-            self._wait_for_intransit_assembly()
-            self._node.navigate_goal(station_id)
-            for mat_id in mat_ids:
-                self._node.arm_return_material_to_storage(
-                    material_id=mat_id, station_id=station_id
-                )
-            self._node.call_post_process()
+        self._return_materials_to_storage(surplus)
 
     # ------------------------------------------------------------------
     # Phase 2 — Main pickup loop

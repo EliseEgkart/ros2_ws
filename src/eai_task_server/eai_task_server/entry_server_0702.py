@@ -5,7 +5,7 @@ Fixed ENTRY TIER lifecycle mission publisher.
 Arena layout station IDs (post arena-layout revision):
     Side A: start=0, storage_1=1, storage_2=2, hybrid_1=3, workbench_1=4
             (workbench_2=5 unused), customer_1=6, shared_storage_1=7
-    Side B: start=14, storage_1=13, storage_2=12, hybrid_1=11, workbench_1=10
+    Side B: start=14, storage_1=12, storage_2=13, hybrid_1=11, workbench_1=10
             (workbench_2=9 unused), customer_1=8, shared_storage_1=7 (shared)
 
 Start-area positions (0 / 14) are robot spawn points, not physical
@@ -54,8 +54,8 @@ def build_arena_layout(storage_materials: Dict[str, List[int]]) -> List[Station]
         make_station(Station.ST_CUSTOMER, 'side_b_customer_1', 8, safe_material_ids(storage_materials, 'side_b_customer_1')),
         make_station(Station.ST_WORKBENCH, 'side_b_workbench_1', 10, []),
         make_station(Station.ST_HYBRID, 'side_b_hybrid_1', 11, safe_material_ids(storage_materials, 'side_b_hybrid_1')),
-        make_station(Station.ST_STORAGE, 'side_b_storage_2', 12, safe_material_ids(storage_materials, 'side_b_storage_2')),
-        make_station(Station.ST_STORAGE, 'side_b_storage_1', 13, safe_material_ids(storage_materials, 'side_b_storage_1')),
+        make_station(Station.ST_STORAGE, 'side_b_storage_1', 12, safe_material_ids(storage_materials, 'side_b_storage_1')),
+        make_station(Station.ST_STORAGE, 'side_b_storage_2', 13, safe_material_ids(storage_materials, 'side_b_storage_2')),
     ]
 
 

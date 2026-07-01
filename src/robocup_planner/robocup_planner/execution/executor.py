@@ -46,6 +46,10 @@ class Plan:
     product_weights: Dict[int, float] = field(default_factory=dict)
 
 
+class ExecutionFailure(RuntimeError):
+    """Raised when a required runtime action fails and the plan cannot continue."""
+
+
 class Executor:
     """
     Runs the reactive execution loop. Calls blocking helper methods on
@@ -59,7 +63,8 @@ class Executor:
         self._allocator = CargoAllocator()
         self._allocator.allocate(plan.intransit_products, plan.product_weights)
 
-        # Product_ids whose ASSEMBLE command has already been started.
+        # Cargo IDs whose ASSEMBLE command has already been started.
+        # Product IDs can repeat in one order, so slot state is keyed by cargo.
         self._started_intransit: set = set()
         # Prevent re-entrant overflow trips.
         self._en_route_to_wb: bool = False
@@ -76,6 +81,7 @@ class Executor:
 
         # After Phase 1: reclaimed materials may already satisfy a queued product.
         self._start_ready_intransit_assembly()
+        self._wait_for_intransit_assembly()
         if self._has_ready_deliveries():
             self._deliver_all()
 
@@ -83,6 +89,7 @@ class Executor:
         self._run_pickup_phase()
 
         # Final delivery of anything remaining
+        self._wait_for_intransit_assembly()
         self._deliver_all()
 
         # Return to home station (0 for A-side, 14 for B-side)
@@ -192,22 +199,18 @@ class Executor:
         """
         for cargo_id in (7, 8):
             product_id = self._allocator.get_slot_product(cargo_id)
-            if product_id is None or product_id in self._started_intransit:
+            if product_id is None or cargo_id in self._started_intransit:
                 continue
             # Check if all required materials are available in cargo 2-6.
             if not self._node.cargo_has_all_materials(product_id):
                 continue
 
-            assembled_cargo = self._allocator.mark_assembled(product_id)
-            if assembled_cargo is None:
-                continue
-
-            self._started_intransit.add(product_id)
+            self._started_intransit.add(cargo_id)
             self._log(
-                f"  [READY] in-transit product {product_id} → cargo {assembled_cargo}; "
+                f"  [READY] in-transit product {product_id} → cargo {cargo_id}; "
                 "starting ASSEMBLE async"
             )
-            self._node.arm_assemble_intransit_async(product_id, assembled_cargo)
+            self._node.arm_assemble_intransit_async(product_id, cargo_id)
             return True
 
         return False
@@ -215,7 +218,27 @@ class Executor:
     def _wait_for_intransit_assembly(self) -> None:
         """Block until arm is idle; drain any newly-ready assemblies."""
         while True:
-            self._node.wait_for_intransit_assembly()
+            completed = self._node.wait_for_intransit_assembly()
+            for handle in completed:
+                if not handle.success:
+                    self._started_intransit.discard(handle.cargo_id)
+                    raise ExecutionFailure(
+                        f"ASSEMBLE failed: product={handle.product_id}, "
+                        f"cargo={handle.cargo_id}"
+                    )
+
+                if not self._allocator.mark_slot_assembled(
+                    handle.cargo_id, handle.product_id
+                ):
+                    raise ExecutionFailure(
+                        f"ASSEMBLE state mismatch: product={handle.product_id}, "
+                        f"cargo={handle.cargo_id}"
+                    )
+                self._log(
+                    f"  [DONE] in-transit product {handle.product_id} "
+                    f"assembled on cargo {handle.cargo_id}"
+                )
+
             if not self._start_ready_intransit_assembly():
                 return
 
@@ -266,11 +289,11 @@ class Executor:
                 product_id=slot.product_id,
                 from_cargo_id=slot.cargo_id,
             )
+            self._started_intransit.discard(slot.cargo_id)
             newly_queued = self._allocator.free_slot(slot.cargo_id)
             if newly_queued is not None:
-                new_cargo = self._allocator.get_product_slot(newly_queued)
                 self._log(
-                    f"  [QUEUE] product {newly_queued} now allocated to cargo {new_cargo}"
+                    f"  [QUEUE] product {newly_queued} now allocated to cargo {slot.cargo_id}"
                 )
                 # Materials for newly_queued may already be loaded — check immediately.
                 self._start_ready_intransit_assembly()

@@ -12,10 +12,10 @@ Priority rule for slot assignment:
     - Smallest product_id as deterministic tie-break.
 
 Slot lifecycle:
-  allocate()        → called once at plan time; fills slots 7/8 and queues the rest.
-  mark_assembled()  → called when ASSEMBLE starts; marks slot as deliverable.
-  free_slot()       → called after delivery; releases the slot and auto-assigns
-                       the next queued product (if any).
+  allocate()             → called once at plan time; fills slots 7/8 and queues the rest.
+  mark_slot_assembled()  → called when ASSEMBLE succeeds; marks slot as deliverable.
+  free_slot()            → called after delivery; releases the slot and auto-assigns
+                            the next queued product (if any).
 """
 
 from typing import Dict, List, Optional
@@ -152,11 +152,21 @@ class CargoAllocator:
         cargo_id = self.get_product_slot(product_id)
         if cargo_id is None:
             return None
-        slot = self._slots.get(cargo_id)
-        if slot is None:
+        if not self.mark_slot_assembled(cargo_id, product_id):
             return None
-        slot.mark_complete()
         return cargo_id
+
+    def mark_slot_assembled(self, cargo_id: int, product_id: int) -> bool:
+        """Mark the specific cargo slot as assembled.
+
+        Product IDs are not unique when an order contains duplicates, so runtime
+        completion must be keyed by cargo_id.
+        """
+        slot = self._slots.get(cargo_id)
+        if slot is None or int(slot.product_id) != int(product_id):
+            return False
+        slot.mark_complete()
+        return True
 
     # ------------------------------------------------------------------
     # Query helpers

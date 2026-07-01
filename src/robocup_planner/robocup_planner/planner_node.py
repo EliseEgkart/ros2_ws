@@ -81,6 +81,16 @@ ARM_PLACE = 'UNLOAD'
 ARM_DELIVER = 'UNLOAD'
 
 
+class IntransitAssemblyHandle:
+    """Result holder for one asynchronous in-transit ASSEMBLE command."""
+
+    def __init__(self, product_id: int, cargo_id: int):
+        self.product_id = int(product_id)
+        self.cargo_id = int(cargo_id)
+        self.event = threading.Event()
+        self.success: Optional[bool] = None
+
+
 class PlannerNode(Node):
 
     def __init__(self):
@@ -148,6 +158,7 @@ class PlannerNode(Node):
 
         self._cargo = CargoManager()
         self._cargo_lock = threading.Lock()
+        self._arm_call_lock = threading.Lock()
         self._last_navigated_station: Optional[int] = None
 
         # --- ROS interfaces ---
@@ -284,6 +295,8 @@ class PlannerNode(Node):
         def _run_and_shutdown():
             try:
                 executor.run()
+            except Exception as e:
+                self.get_logger().error(f"Execution failed: {e}")
             finally:
                 self.get_logger().info("Execution complete — shutting down")
                 if rclpy.ok():
@@ -734,45 +747,56 @@ class PlannerNode(Node):
         self.get_logger().info(f"[NAV] → goal of station {station_id}")
         return self.navigate(abs(station_id))
 
-    def arm_assemble_intransit_async(self, product_id: int, cargo_id: int) -> None:
+    def arm_assemble_intransit_async(
+        self, product_id: int, cargo_id: int
+    ) -> IntransitAssemblyHandle:
         """Start in-transit assembly on cargo_id asynchronously.
 
         The arm stacks blocks on cargo 7/8 while the AMR moves.  Callers must
         invoke wait_for_intransit_assembly() before navigate_goal() to ensure
         the arm is idle during the precision-parking phase.
         """
-        event = threading.Event()
+        handle = IntransitAssemblyHandle(product_id, cargo_id)
         with self._intransit_lock:
-            self._intransit_events.append(event)
+            self._intransit_events.append(handle)
 
         with self._cargo_lock:
             materials_to_consume = self._cargo.find_materials_for_product(product_id) or []
 
         def _assemble():
-            self.get_logger().info(
-                f"[ARM] ASSEMBLE product={product_id} cargo={cargo_id}"
-            )
-            success = self._arm_call(
-                'ASSEMBLE',
-                object_ids=[product_id],
-                location=cargo_id,
-                station_id=cargo_id,
-            )
-            if success:
-                with self._cargo_lock:
-                    for c_id, mat_id in materials_to_consume:
-                        self._cargo.remove_material(c_id, mat_id)
-            else:
-                self.get_logger().warning(
-                    f"[ARM] ASSEMBLE failed: product={product_id}"
+            try:
+                self.get_logger().info(
+                    f"[ARM] ASSEMBLE product={product_id} cargo={cargo_id}"
                 )
-            event.set()
+                success = self._arm_call(
+                    'ASSEMBLE',
+                    object_ids=[product_id],
+                    location=cargo_id,
+                    station_id=cargo_id,
+                )
+                handle.success = success
+                if success:
+                    with self._cargo_lock:
+                        for c_id, mat_id in materials_to_consume:
+                            self._cargo.remove_material(c_id, mat_id)
+                else:
+                    self.get_logger().warning(
+                        f"[ARM] ASSEMBLE failed: product={product_id}"
+                    )
+            except Exception as e:
+                handle.success = False
+                self.get_logger().error(
+                    f"[ARM] ASSEMBLE exception: product={product_id}: {e}"
+                )
+            finally:
+                handle.event.set()
 
         threading.Thread(
             target=_assemble, daemon=True, name=f'assemble_{product_id}'
         ).start()
+        return handle
 
-    def wait_for_intransit_assembly(self) -> None:
+    def wait_for_intransit_assembly(self) -> list:
         """Block until all pending in-transit ASSEMBLE operations finish.
 
         Call this at sub_goal before navigate_goal() so the arm is idle
@@ -786,9 +810,10 @@ class PlannerNode(Node):
             self.get_logger().info(
                 f"[ARM] Waiting for {len(events)} in-transit assembly operation(s)"
             )
-            for ev in events:
-                ev.wait()
+            for handle in events:
+                handle.event.wait()
             self.get_logger().info("[ARM] All in-transit assemblies complete")
+        return events
 
     def wb_task(self, work_type: str, product_id: int) -> bool:
         """Block until the workbench completes the requested work."""
@@ -824,23 +849,24 @@ class PlannerNode(Node):
         station_id: int = None,
     ) -> bool:
         """Send one ArmCommand service call to the arm. Blocks until response."""
-        self._arm_client.wait_for_service()
+        with self._arm_call_lock:
+            self._arm_client.wait_for_service()
 
-        req = ArmCommand.Request()
-        req.action = action
-        req.object_ids = [int(x) for x in object_ids]
-        req.location = int(location)
-        req.station_id = int(station_id if station_id is not None else location)
+            req = ArmCommand.Request()
+            req.action = action
+            req.object_ids = [int(x) for x in object_ids]
+            req.location = int(location)
+            req.station_id = int(station_id if station_id is not None else location)
 
-        future = self._arm_client.call_async(req)
-        done = threading.Event()
+            future = self._arm_client.call_async(req)
+            done = threading.Event()
 
-        def _cb(f):
-            done.set()
+            def _cb(f):
+                done.set()
 
-        future.add_done_callback(_cb)
-        done.wait()
-        return future.result().success
+            future.add_done_callback(_cb)
+            done.wait()
+            return future.result().success
 
     def arm_pick_material(self, station_id: int, material_id: int) -> bool:
         """Pick one material block from a storage station and place it on cargo."""

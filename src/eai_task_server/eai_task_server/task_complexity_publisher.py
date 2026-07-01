@@ -41,7 +41,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from sml_msgs.msg import Order, Station, Task
+from sml_messages.msg import Order, Station, Task
 
 
 # -----------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 robocup_planner_sim.launch.py
 
 Full simulation stack:
-  order_server  — publishes /sml/task (TRANSIENT_LOCAL, auto_publish)
+  order_server  — publishes /eai/task (auto_publish)
   mock_nav_node — serves navigate_to_station action
   mock_arm_node — serves /amr_robot_command service
   mock_wb_node  — serves wb_task action

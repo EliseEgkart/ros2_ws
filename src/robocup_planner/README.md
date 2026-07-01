@@ -8,7 +8,7 @@ RoboCup SML 경기용 계획·실행 통합 노드.
 ## 아키텍처
 
 ```
-/sml/task (TRANSIENT_LOCAL)
+/eai/task
       │
       ▼
 [PlannerNode]
@@ -34,7 +34,7 @@ RoboCup SML 경기용 계획·실행 통합 노드.
 
 | 방향 | 인터페이스 | 타입 | 설명 |
 |---|---|---|---|
-| Sub | `/sml/task` | `sml_messages/msg/Task` | 주문 수신 트리거 |
+| Sub | `/eai/task` | `sml_messages/msg/Task` | 주문 수신 트리거 |
 | Sub | `/workbench/product_ready` | `std_msgs/Int32` | 워크벤치 완료 신호 |
 | Act | `navigate_to_station` | `robocup_pkg/action/NavTask` | AMR 이동 |
 | Srv | `/robocup_navigator/post_process` | `std_srvs/srv/Trigger` | station 작업 후 후진/회전 이탈 |
@@ -74,7 +74,7 @@ cargo 7/8에는 `is_intransit_eligible` 조건을 만족하는 제품만 할당�
 
 | 파라미터 | 기본값 | 설명 |
 |---|---|---|
-| `task_topic` | `/sml/task` | 주문 수신 토픽 |
+| `task_topic` | `/eai/task` | 주문 수신 토픽 |
 | `nav_action` | `navigate_to_station` | 내비게이션 액션 이름 |
 | `post_process_service` | `/robocup_navigator/post_process` | station 작업 후 이탈 서비스 |
 | `wb_action` | `wb_task` | 워크벤치 액션 이름 |
@@ -139,7 +139,7 @@ robocup_planner/
 
 ```bash
 # 주문 확인
-ros2 topic echo /sml/task --once
+ros2 topic echo /eai/task --once
 
 # 내비게이션 액션 단독 테스트 (sub_goal)
 ros2 action send_goal /navigate_to_station robocup_pkg/action/NavTask "{station_id: -2}" --feedback

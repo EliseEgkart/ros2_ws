@@ -6,7 +6,7 @@ reactive executor in a background thread while the ROS2 node spins
 normally in the main thread.
 
 Interfaces:
-  Sub  /sml/task              sml_messages/Task     — task definition
+  Sub  /eai/task              sml_messages/Task     — task definition
   Sub  <wb_ready_topic>       std_msgs/Int32         — workbench product_id ready
   Act  navigate_to_station    robocup_pkg/NavTask    — navigate to station
   Act  wb_task                robocup_pkg/WbTask     — workbench work
@@ -30,6 +30,11 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
 TASK_QOS = QoSProfile(
+    depth=10,
+    durability=QoSDurabilityPolicy.VOLATILE,
+    reliability=QoSReliabilityPolicy.RELIABLE,
+)
+LATCHED_TASK_QOS = QoSProfile(
     depth=1,
     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -93,7 +98,7 @@ class PlannerNode(Node):
         except Exception:
             _default_wp = ''
         self.declare_parameter('waypoint_yaml', _default_wp)
-        self.declare_parameter('task_topic', '/sml/task')
+        self.declare_parameter('task_topic', '/eai/task')
         self.declare_parameter('nav_action', 'navigate_to_station')
         self.declare_parameter('wb_action', 'wb_task')
         self.declare_parameter('arm_service', '/amr_robot_command')
@@ -148,6 +153,9 @@ class PlannerNode(Node):
         # --- ROS interfaces ---
         self._task_sub = self.create_subscription(
             Task, task_topic, self._on_task, TASK_QOS
+        )
+        self._latched_task_sub = self.create_subscription(
+            Task, task_topic, self._on_task, LATCHED_TASK_QOS
         )
         self._wb_ready_sub = self.create_subscription(
             Int32, wb_ready_topic, self._on_wb_ready, 10

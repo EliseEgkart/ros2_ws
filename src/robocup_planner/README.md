@@ -15,18 +15,43 @@ RoboCup SML 경기용 계획·실행 통합 노드.
   ┌── 계획 단계 ──────────────────────────────────────────────┐
   │  order_list     → aidlist / net_aidlist (재활용 차감)     │
   │  arena_layout   → midlist (거리순 pickup 시퀀스)          │
+  │                 → material_home_station (재료별 원래 보관소) │
   │  produce_ids    → workbench_products / intransit_products  │
+  │  recycled_materials vs aidlist → surplus_recycled (잉여 재료) │
   └────────────────────────────────────────────────────────────┘
       │
       ▼
 [Executor] (백그라운드 스레드)
-  Phase 1: 재활용 픽업 (customer → workbench 분해)
-  Phase 2: 재료 픽업 루프
+  Phase 1  : 재활용 픽업 (customer → workbench 분해, 비동기)
+  Phase 1.5: 잉여 재활용 재료 반납 (→ 원래 보관소)
+  Phase 2  : 재료 픽업 루프
     ├── navigate_subgoal(id)          ← 고속 주행
     ├── wait_for_intransit_assembly() ← cargo 7/8 조립 완료 대기
     └── navigate_goal(id)             ← 저속 정밀 도킹
-  Phase 3: 납품
+  Phase 3  : 납품
 ```
+
+### Phase 1 상세 — 재활용 픽업 및 분해 (비동기 처리)
+
+재활용 제품이 여러 개인 경우, 워크벤치의 분해(RECYCLE) 작업은 `wb_task_async()`로
+**논블로킹 실행**됩니다. AMR은 분해가 끝나기를 기다리며 워크벤치 앞에 정차하지 않고,
+곧바로 다음 재활용 제품을 가지러 이동합니다. 워크벤치 분해와 AMR 주행이 동시에
+진행되는 구조입니다.
+
+- 워크벤치에 새 제품을 내려놓기 **전에**, 이전에 분해가 끝난 제품의 재료 블록을
+  먼저 회수합니다 (`_collect_recycled_materials()`). 워크벤치 선반에 재료가
+  쌓인 채로 다음 제품을 올려두지 않기 위함입니다.
+- 재활용 제품이 여러 개 몰려 cargo 2-6이 가득 차면(`cargo_is_full()`), 다음
+  제품을 가지러 가기 전에 이미 워크벤치에 있는 김에 자재를 내려놓습니다
+  (`arm_unload_all_materials()`).
+- 마지막 제품의 분해가 끝날 때까지는 Phase 1 종료 시점에 반드시 회수합니다.
+
+### Phase 1.5 — 잉여 재활용 재료 반납
+
+분해로 얻은 재료 중 현재 주문에 필요한 개수를 초과하는 만큼(`surplus_recycled`)은
+카고에 남겨두지 않고, 계획 단계에서 계산해 둔 `material_home_station`(재료별
+원래 보관소)으로 이동해 반납합니다. 같은 보관소로 갈 재료는 한 번에 모아서
+반납하여 불필요한 재방문을 피합니다.
 
 ---
 

@@ -12,6 +12,15 @@ Cargo overflow rule:
   If all cargo 2-6 slots are full and no in-transit slot is assembling yet,
   go to the workbench to drop materials as a buffer.
 
+Recycle disassembly rule (Phase 1):
+  RECYCLE runs on the workbench asynchronously (wb_task_async), so the AMR
+  drives off to fetch the next recycle product instead of idling at the
+  workbench while it disassembles. Materials from the previous disassembly
+  are always collected before the next product is placed on the workbench
+  shelf. If cargo 2-6 fills up while multiple recycle products are in
+  flight, the load is dropped at the workbench before heading to the next
+  pickup instead of risking an overflow trip mid-route.
+
 In-transit assembly rule (Mod 2):
   Completed products on cargo 7/8 are delivered directly from cargo 7/8
   to the customer counter — they do NOT move to cargo 1 first.
@@ -43,6 +52,7 @@ class Plan:
     customer_station_id: int
     home_station_id: int
     surplus_recycled: Dict[int, int] = field(default_factory=dict)
+    material_home_station: Dict[int, int] = field(default_factory=dict)
     product_weights: Dict[int, float] = field(default_factory=dict)
 
 
@@ -79,6 +89,10 @@ class Executor:
         # Phase 1: recycle pickups (customer counter → workbench → disassembly)
         self._run_recycle_phase()
 
+        # Return recycled materials that exceed what the order needs to their
+        # designated storage station, instead of leaving them stuck in cargo.
+        self._return_surplus_materials()
+
         # After Phase 1: reclaimed materials may already satisfy a queued product.
         self._start_ready_intransit_assembly()
         self._wait_for_intransit_assembly()
@@ -102,6 +116,17 @@ class Executor:
     # ------------------------------------------------------------------
 
     def _run_recycle_phase(self) -> None:
+        """Pick up every recycle product and disassemble it at the workbench.
+
+        RECYCLE runs asynchronously on the workbench so the AMR can drive off
+        to fetch the next recycle product instead of idling next to the
+        workbench while it disassembles. To avoid stacking a new product on
+        top of an unclaimed pile of material blocks, materials from the
+        previous disassembly are always collected before the next product is
+        placed on the workbench. If cargo 2-6 fills up (typically once 3+
+        recycle products' worth of material has accumulated), the load is
+        dropped at the workbench before the AMR sets off for the next pickup.
+        """
         recycle_entries = [
             e for e in self._plan.mid if e.get('is_recycle_pickup')
         ]
@@ -111,7 +136,10 @@ class Executor:
         self._log(f"Phase 1: recycling {len(recycle_entries)} product(s)")
         workbench_id = self._plan.workbench_station_id
 
-        for entry in recycle_entries:
+        pending_wb_handle = None
+        pending_wb_pid = None
+
+        for idx, entry in enumerate(recycle_entries):
             station_id = entry['station_id']
             pid = entry['recycle_product_id']
 
@@ -124,22 +152,94 @@ class Executor:
 
             self._log(f"  → navigate to workbench {workbench_id} for RECYCLE")
             self._node.navigate_goal(workbench_id)
+
+            # Clear out the previous product's disassembled materials first so
+            # the workbench shelf is free before we place the next product on it.
+            if pending_wb_handle is not None:
+                self._collect_recycled_materials(
+                    pending_wb_handle, pending_wb_pid, workbench_id
+                )
+                pending_wb_handle = None
+                pending_wb_pid = None
+
             self._node.arm_unload_product_to_workbench(
                 product_id=pid,
                 station_id=workbench_id,
             )
-            self._node.wb_task('RECYCLE', pid)
+            pending_wb_handle = self._node.wb_task_async('RECYCLE', pid)
+            pending_wb_pid = pid
+            self._node.call_post_process()
 
-            # Pick up each material block the workbench placed on its output shelf.
-            for mat_id, cnt in get_material_count(pid).items():
-                for _ in range(cnt):
-                    self._log(f"    ← pick recycled mat {mat_id} from workbench")
-                    self._node.arm_pick_material(
-                        station_id=workbench_id,
-                        material_id=mat_id,
-                    )
-                    self._start_ready_intransit_assembly()
+            # Cargo pressure check: with several recycle products in flight,
+            # cargo 2-6 can fill up with reclaimed material before it's all
+            # needed. Drop the load here (we're already at the workbench)
+            # rather than risking an overflow trip mid-route to the next pickup.
+            is_last = (idx == len(recycle_entries) - 1)
+            if not is_last and self._node.cargo_is_full():
+                self._log(
+                    "  ! cargo full during recycle phase — "
+                    "dropping materials at workbench before next pickup"
+                )
+                self._node.arm_unload_all_materials()
+                self._node.call_post_process()
 
+        # Collect whatever disassembly is still pending after the last pickup.
+        if pending_wb_handle is not None:
+            self._collect_recycled_materials(
+                pending_wb_handle, pending_wb_pid, workbench_id
+            )
+
+    def _collect_recycled_materials(
+        self, handle, pid: int, workbench_id: int
+    ) -> None:
+        """Wait for a RECYCLE WbTask to finish, then pick up every material
+        block it produced from the workbench shelf."""
+        if not self._node.wait_for_wb_task(handle):
+            raise ExecutionFailure(f"RECYCLE failed: product={pid}")
+
+        for mat_id, cnt in get_material_count(pid).items():
+            for _ in range(cnt):
+                self._log(f"    ← pick recycled mat {mat_id} from workbench")
+                self._node.arm_pick_material(
+                    station_id=workbench_id,
+                    material_id=mat_id,
+                )
+                self._start_ready_intransit_assembly()
+
+    # ------------------------------------------------------------------
+    # Return surplus recycled materials to their designated storage station
+    # ------------------------------------------------------------------
+
+    def _return_surplus_materials(self) -> None:
+        """Return recycled materials beyond what's needed for production to
+        their designated storage station.
+
+        Blocks of the same material_id are fungible: the plan only tracks how
+        many extra units exist, not which physical blocks, so any `count`
+        units of that material currently in cargo can be dropped off.
+        """
+        surplus = {m: c for m, c in self._plan.surplus_recycled.items() if c > 0}
+        if not surplus:
+            return
+
+        # Group by destination station so each station is visited once.
+        by_station: Dict[int, List[int]] = {}
+        for mat_id, cnt in surplus.items():
+            station_id = self._plan.material_home_station.get(
+                mat_id, self._plan.workbench_station_id
+            )
+            by_station.setdefault(station_id, []).extend([mat_id] * cnt)
+
+        self._log(f"Returning surplus recycled materials: {surplus}")
+        for station_id, mat_ids in by_station.items():
+            self._log(f"  → navigate to storage {station_id} to return {mat_ids}")
+            self._node.navigate_subgoal(station_id)
+            self._wait_for_intransit_assembly()
+            self._node.navigate_goal(station_id)
+            for mat_id in mat_ids:
+                self._node.arm_return_material_to_storage(
+                    material_id=mat_id, station_id=station_id
+                )
             self._node.call_post_process()
 
     # ------------------------------------------------------------------

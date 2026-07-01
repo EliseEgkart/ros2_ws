@@ -91,6 +91,16 @@ class IntransitAssemblyHandle:
         self.success: Optional[bool] = None
 
 
+class WbTaskHandle:
+    """Result holder for one asynchronous WbTask (workbench) command."""
+
+    def __init__(self, work_type: str, product_id: int):
+        self.work_type = work_type
+        self.product_id = int(product_id)
+        self.event = threading.Event()
+        self.success: Optional[bool] = None
+
+
 class PlannerNode(Node):
 
     def __init__(self):
@@ -383,6 +393,21 @@ class PlannerNode(Node):
             f"from candidates {workbench_station_ids}"
         )
 
+        # Map each material_id to its designated storage station (the "home"
+        # position recycled surplus materials should be returned to). When a
+        # material is stocked at more than one station, prefer the one closest
+        # to the workbench, since that's where disassembly happens.
+        material_home_station: Dict[int, int] = {}
+        for s in storage_stations:
+            for mat_id in s['material_ids']:
+                if mat_id not in material_home_station:
+                    material_home_station[mat_id] = s['station_id']
+                elif self._calc:
+                    current = material_home_station[mat_id]
+                    if (self._calc.station_to_station(workbench_station_id, s['station_id'])
+                            < self._calc.station_to_station(workbench_station_id, current)):
+                        material_home_station[mat_id] = s['station_id']
+
         if self._debug_export:
             _dbg['input'] = {
                 'produce_ids': produce_ids,
@@ -558,6 +583,7 @@ class PlannerNode(Node):
             customer_station_id=customer_station_id,
             home_station_id=home_id,
             surplus_recycled=surplus,
+            material_home_station=material_home_station,
             product_weights=self._product_weights,
         )
 
@@ -575,6 +601,7 @@ class PlannerNode(Node):
                 'customer_station_id': customer_station_id,
                 'home_station_id': home_id,
                 'surplus_recycled': dict(surplus),
+                'material_home_station': dict(material_home_station),
             }
             self._export_plan_debug(_dbg)
 
@@ -841,6 +868,43 @@ class PlannerNode(Node):
         done.wait()
         return success_holder[0]
 
+    def wb_task_async(self, work_type: str, product_id: int) -> WbTaskHandle:
+        """Start a WbTask without blocking, so the AMR can drive off (e.g. to
+        fetch the next recycling product) while the workbench is still
+        working. Call wait_for_wb_task() before relying on the result.
+        """
+        handle = WbTaskHandle(work_type, product_id)
+        self._wb_client.wait_for_server()
+
+        def _result_cb(future):
+            handle.success = future.result().result.success
+            handle.event.set()
+
+        def _goal_cb(future):
+            gh = future.result()
+            if not gh.accepted:
+                self.get_logger().error(
+                    f"WbTask goal rejected ({work_type} {product_id})"
+                )
+                handle.success = False
+                handle.event.set()
+                return
+            gh.get_result_async().add_done_callback(_result_cb)
+
+        goal = WbTask.Goal()
+        goal.work_type = work_type
+        goal.product_id = product_id
+        self.get_logger().info(
+            f"[WB] {work_type} {product_id} started asynchronously"
+        )
+        self._wb_client.send_goal_async(goal).add_done_callback(_goal_cb)
+        return handle
+
+    def wait_for_wb_task(self, handle: WbTaskHandle) -> bool:
+        """Block until the given asynchronous WbTask completes."""
+        handle.event.wait()
+        return bool(handle.success)
+
     def _arm_call(
         self,
         action: str,
@@ -898,6 +962,26 @@ class PlannerNode(Node):
             object_ids=[object_id],
             location=0,
         )
+
+    def arm_return_material_to_storage(self, material_id: int, station_id: int) -> bool:
+        """Return a surplus recycled material block from cargo to its designated
+        storage station (instead of leaving it stranded in cargo 2-6)."""
+        self.get_logger().info(
+            f"[ARM] return surplus material_id={material_id} to storage {station_id}"
+        )
+        success = self._arm_call(
+            ARM_PLACE,
+            object_ids=[material_id],
+            location=station_id,
+            station_id=station_id,
+        )
+        if success:
+            with self._cargo_lock:
+                for cargo_id, mat_id in self._cargo.all_materials():
+                    if mat_id == material_id:
+                        self._cargo.remove_material(cargo_id, mat_id)
+                        break
+        return success
 
     def arm_unload_product_to_workbench(self, product_id: int, station_id: int) -> bool:
         """Unload a recycled product from cargo 1 to the current workbench."""

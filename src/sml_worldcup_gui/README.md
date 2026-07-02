@@ -25,32 +25,50 @@ the side panel first — it means nothing is publishing `/odom` yet (normal
 if you're running an older `mock_nav_node.py` build without the odometry
 patch, or before the real robot's localization has started).
 
-## Station layout — name-based, not id-based
+## Station layout — driven by real waypoints, not a hand-drawn schematic
 
-The different `eai_task_server` task generators (`task_publisher.py`,
-`entry_server_0702.py`/`beginner_server_0702.py`, `manual_order_server.py`,
-`task_complexity_publisher.py`) do **not** agree on numeric `station_id`
-values for the same physical station. They do all agree on station
-**names** (`side_a_storage_1`, `side_a_workbench_2`, `shared_storage_1`,
-...). This GUI groups incoming `arena_layout` entries by parsing the name
-(`station_roles.py`), not by `station_id`, and lays each role out in a
-schematic matching `map.jpg` ("SML Example Layout — World Cup 2026"):
-Side A left, Side B right, one shared-storage column in the center, a
-customer row along the top, two start/goal boxes at bottom-center. The
-layout is count-adaptive — 2 or 3 storage stations per side both render
-correctly.
+**Revision 2 (2026-07-02, same day as the initial rewrite)**: real-hardware
+testing showed the AMR marker landing away from the station boxes. Root
+cause: the first cut of this GUI rendered stations on a hand-drawn
+schematic grid matching `map.jpg`, and computed a *separate* AMR-position
+transform from only 2 anchor points — those two coordinate systems were
+never guaranteed to agree except at the anchors. This is now fixed
+structurally, not patched:
 
-## AMR marker placement
+- Every station's canvas position **and** the AMR marker are computed by
+  applying the exact same `waypoints.FitTransform` to real
+  `robocup_waypoint.yaml` meters (`waypoints.py`, `canvas_view.py`). There
+  is one coordinate transform, rebuilt from all currently-known station
+  positions whenever a new `Task` arrives — so a station box and the AMR
+  marker sitting on it are the same computation applied to (in the limit)
+  the same real point, not two guesses that happen to agree.
+- `resolve_station_xy()` mirrors `mock_nav_node.py`'s own `_station_coord()`
+  resolution order exactly (raw `station_id` first, then the B-side→A-side
+  canonical id) — a station renders at the same real position the AMR
+  actually navigates to for it, not a different one derived independently.
+- Any station whose `station_id` has no `robocup_waypoint.yaml` entry yet
+  (the navigator team's file is still WIP — as of this writing it only
+  defines `station_0`..`station_8`) is listed in a small "no waypoint" tray
+  at the bottom of the window instead of being silently dropped or placed
+  at a guessed position.
+- Station **grouping** (which role a station is) still comes from parsing
+  the `arena_layout` entry's **name** (`station_roles.py`), not its numeric
+  `station_id` — the different `eai_task_server` task generators
+  (`task_publisher.py`, `entry_server_0702.py`/`beginner_server_0702.py`,
+  `manual_order_server.py`, `task_complexity_publisher.py`) don't agree on
+  IDs for the same physical station, but they do all agree on names
+  (`side_a_storage_1`, `shared_storage_1`, ...).
 
-Real-world station coordinates come from `robocup_planner/config/robocup_waypoint.yaml`
-(the same file the real planner's `DistanceCalculator` and the real
-navigator use), resolved via `ament_index` by default. As of this writing
-that file only defines `station_0`..`station_8` — it's still a
-work-in-progress on the navigator team's side. The GUI computes a
-best-effort similarity transform (rotation + scale + translation) from two
-anchor points (canonical station `0` = start/goal, `6` = customer_1) to its
-schematic canvas space; if either anchor is missing from the YAML, the live
-marker is hidden (grayed out) rather than guessed at.
+One consequence worth knowing: the rendered arrangement reflects the real
+arena's true relative geometry (scaled/centered to fit the window, with a
+consistent y-flip so it isn't mirrored top-to-bottom), **not** necessarily
+`map.jpg`'s exact left/right or top/bottom placement — there's no verified
+mapping yet from "which way is up in the real coordinate frame" to "which
+way is up in the reference diagram". Positions will only visually match
+`map.jpg` 1:1 once that's confirmed with the navigator team; until then,
+internal self-consistency (station ↔ AMR alignment) was prioritized over
+matching the picture, since that's what makes the GUI usable for real
+monitoring.
 
 ## Run
 
@@ -76,7 +94,7 @@ Other parameters (all optional, `--ros-args -p name:=value`):
 | `wb_action` | `wb_task` | Workbench liveness probe |
 | `arm_service` | `/amr_robot_command` | Arm liveness probe |
 | `post_process_service` | `/robocup_navigator/post_process` | Post-process liveness probe |
-| `waypoint_yaml` | resolved via `ament_index` against `robocup_planner`'s installed share dir | Real station coordinates for the AMR-position transform |
+| `waypoint_yaml` | resolved via `ament_index` against `robocup_planner`'s installed share dir | Real station coordinates driving both station placement and the AMR marker |
 | `health_check_period_sec` | `1.0` | How often the connection indicators refresh |
 
 The `worldcup_gui` console-script alias still works for compatibility with
@@ -86,11 +104,11 @@ older invocations.
 
 ```
 sml_worldcup_gui/
-├── layout_schema.py    # schematic canvas positions matching map.jpg
+├── layout_schema.py    # role colors/labels + canvas geometry constants
 ├── station_roles.py    # parses arena_layout station names into roles
-├── waypoints.py         # robocup_waypoint.yaml -> canvas similarity transform
+├── waypoints.py         # robocup_waypoint.yaml -> the one shared real-to-canvas transform
 ├── ros_bridge.py        # rclpy node, thread-safe event queue
-├── canvas_view.py       # tk.Canvas arena renderer
+├── canvas_view.py       # tk.Canvas arena renderer (stations + AMR marker)
 ├── side_panel.py        # orders / connection health / selected station
 └── app.py                # entry point wiring the above together
 ```

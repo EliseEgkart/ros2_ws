@@ -1,6 +1,6 @@
 robocup_planner:
   ros__parameters:
-    side: "b"
+    side: "a"
     task_topic: "/eai/task"
     nav_action: "navigate_to_station"
     wb_action: "wb_task"
@@ -19,14 +19,14 @@ order_server:
   ros__parameters:
     task_topic: "/eai/task"
     auto_publish: true
-    start_side: "b"
+    start_side: "a"
     mode: "preset"
     tier: "beginner"
     stage: "production"
 
 mock_nav_node:
   ros__parameters:
-    side: "b"
+    side: "a"
     delay_sec: 1.0
     use_distance_time: false
     amr_speed_mps: 0.50

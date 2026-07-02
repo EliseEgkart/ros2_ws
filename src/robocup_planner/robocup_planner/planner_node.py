@@ -133,6 +133,22 @@ class PlannerNode(Node):
         # JSON string: {"product_id": weight, ...}  e.g. '{"8518": 2.0}'
         # Higher weight → cargo 7/8 slot assigned earlier (assembled first).
         self.declare_parameter('product_weights_json', '')
+        # Bounded-wait / self-recovery parameters. Every blocking ROS2 call
+        # (navigate, wb_task, arm command) previously waited forever on a
+        # threading.Event with no timeout — a single unresponsive server
+        # would hang the executor thread indefinitely with no operator-
+        # visible error. These bound that wait and allow a small number of
+        # retries before the call is treated as a hard failure.
+        self.declare_parameter('nav_timeout_sec', 60.0)
+        self.declare_parameter('arm_timeout_sec', 30.0)
+        self.declare_parameter('wb_timeout_sec', 120.0)
+        self.declare_parameter('call_max_retries', 2)
+        # Lifecycle scheduling: multiply the effective cargo-slot priority
+        # weight of produce orders that are also deferred-recycle orders
+        # (same product_id, no initial customer stock — see Plan.deferred_recycle_ids)
+        # so they clear the produce→deliver→reclaim loop earlier instead of
+        # being scheduled purely by num_blocks/weight like every other order.
+        self.declare_parameter('deferred_recycle_priority_boost', 1000.0)
 
         wp_path = self.get_parameter('waypoint_yaml').get_parameter_value().string_value
         task_topic = self.get_parameter('task_topic').get_parameter_value().string_value
@@ -159,6 +175,14 @@ class PlannerNode(Node):
                 self._product_weights = {}
         else:
             self._product_weights: Dict[int, float] = {}
+
+        self._nav_timeout_sec: float = self.get_parameter('nav_timeout_sec').get_parameter_value().double_value
+        self._arm_timeout_sec: float = self.get_parameter('arm_timeout_sec').get_parameter_value().double_value
+        self._wb_timeout_sec: float = self.get_parameter('wb_timeout_sec').get_parameter_value().double_value
+        self._call_max_retries: int = self.get_parameter('call_max_retries').get_parameter_value().integer_value
+        self._deferred_recycle_priority_boost: float = self.get_parameter(
+            'deferred_recycle_priority_boost'
+        ).get_parameter_value().double_value
 
         if not wp_path:
             self.get_logger().warning("waypoint_yaml parameter is empty; distances will be inf")
@@ -422,9 +446,34 @@ class PlannerNode(Node):
                 ],
             }
 
-        # Compute aidlist and net_aidlist (recycling already subtracted)
+        # A recycle order can only be picked up "cold" — before anything else
+        # happens — if that exact product_id is physically on the customer
+        # counter in the *initial* arena_layout. In the lifecycle case (a
+        # product is both produced and recycled this run) there may be zero
+        # units of it there at plan time: the robot has to build and deliver
+        # one before there is anything to disassemble. Split recycle orders
+        # into "immediate" (drive Phase 1 as before) and "deferred" (handled
+        # by Executor._run_deferred_recycle_phase() after delivery).
+        #
+        # NOTE: this logic (originally commit 1a06448, 2026-07-02) was lost by
+        # a later rollback to an earlier planner_node.py/executor.py state and
+        # is being restored here — see Known Issues #2 in algorithm_description.md.
+        customer_initial_products = {
+            int(m) for st in customer_stations for m in st.material_ids
+        }
+        recycle_immediate_ids = [pid for pid in recycle_ids if pid in customer_initial_products]
+        recycle_deferred_ids = [pid for pid in recycle_ids if pid not in customer_initial_products]
+        if recycle_deferred_ids:
+            self.get_logger().info(
+                f"Recycle orders with no initial customer stock (produce-then-recycle): "
+                f"{recycle_deferred_ids} — deferred until after delivery"
+            )
+
+        # Compute aidlist and net_aidlist (only immediately-available recycling
+        # is subtracted — deferred recycling happens after production, so it
+        # must not reduce the materials fetched for production itself).
         aidlist, net_aidlist, recycled_materials = compute_net_aidlist(
-            produce_ids, recycle_ids
+            produce_ids, recycle_immediate_ids
         )
         self.get_logger().info(
             f"aidlist={dict(aidlist)}, net_aidlist={dict(net_aidlist)}"
@@ -433,8 +482,8 @@ class PlannerNode(Node):
         # Simulate Phase 1 recycle disassembly to detect cargo overflow at plan time.
         # Materials that would overflow and are still needed get added back to
         # net_aidlist so they are fetched from storage instead of lost silently.
-        if recycle_ids:
-            overflow_needed = self._check_recycle_overflow(recycle_ids, net_aidlist)
+        if recycle_immediate_ids:
+            overflow_needed = self._check_recycle_overflow(recycle_immediate_ids, net_aidlist)
             if overflow_needed:
                 net_aidlist += overflow_needed
                 self.get_logger().info(
@@ -510,13 +559,16 @@ class PlannerNode(Node):
                 f"Cannot satisfy aidlist — missing: {dict(missing)}"
             )
 
-        # Recycling is always triggered when recycle orders exist
-        needs_recycling = bool(recycle_ids)
+        # Phase 1 (customer-counter-first) recycling is only triggered for
+        # products that already have stock sitting at the customer counter.
+        needs_recycling = bool(recycle_immediate_ids)
 
-        # Build recycle orders (map each recycle product to the customer station)
+        # Build recycle orders (map each immediately-recyclable product to the
+        # customer station). Deferred recycle orders are handled after
+        # delivery instead (see Plan.deferred_recycle_ids / Executor).
         recycle_orders = [
             {'station_id': customer_station_id, 'product_id': pid}
-            for pid in recycle_ids
+            for pid in recycle_immediate_ids
         ]
 
         # Build full midlist with batch support
@@ -575,6 +627,25 @@ class PlannerNode(Node):
             if extra > 0:
                 surplus[mat] = extra
 
+        # Lifecycle scheduling: a produce order that's also a deferred-recycle
+        # order (Step 1a) can only start being recycled *after* it's been
+        # assembled and delivered — so it should clear the cargo 7/8 queue as
+        # early as possible instead of competing purely on num_blocks/weight
+        # like every other order. Boost its effective weight for
+        # CargoAllocator.allocate() only; self._product_weights (the
+        # user-supplied param) is left untouched for logging/debugging clarity.
+        effective_weights = dict(self._product_weights)
+        deferred_recycle_produce_ids = sorted(set(produce_ids) & set(recycle_deferred_ids))
+        if deferred_recycle_produce_ids:
+            for pid in deferred_recycle_produce_ids:
+                base = effective_weights.get(pid, 1.0)
+                effective_weights[pid] = base * self._deferred_recycle_priority_boost
+            self.get_logger().info(
+                f"Lifecycle priority boost applied to produce-then-recycle "
+                f"product(s) {deferred_recycle_produce_ids}: "
+                f"x{self._deferred_recycle_priority_boost}"
+            )
+
         plan = Plan(
             mid=mid,
             workbench_products=workbench_ids,
@@ -584,7 +655,8 @@ class PlannerNode(Node):
             home_station_id=home_id,
             surplus_recycled=surplus,
             material_home_station=material_home_station,
-            product_weights=self._product_weights,
+            product_weights=effective_weights,
+            deferred_recycle_ids=recycle_deferred_ids,
         )
 
         self.get_logger().info(
@@ -676,59 +748,101 @@ class PlannerNode(Node):
         with self._cargo_lock:
             return not self._cargo.is_any_slot_available(1)
 
-    def arm_unload_all_materials(self) -> bool:
-        """Unload every material in cargo 2-6 to the current workbench (overflow buffer)."""
+    def arm_unload_all_materials(self) -> Counter:
+        """Unload every material in cargo 2-6 to the current workbench (overflow buffer).
+
+        Returns a Counter of {material_id: count} actually unloaded. Since
+        the workbench no longer consumes anything (Mod 3 — recycle-only),
+        nothing there will ever pick these back up on its own: callers MUST
+        track this return value and arrange to reclaim it later (see
+        Executor._wb_buffer / Known Issues #4 in algorithm_description.md),
+        or the materials are permanently lost from the plan.
+        """
         with self._cargo_lock:
             all_mats = self._cargo.all_materials()
-        success = True
+        unloaded: Counter = Counter()
         for cargo_id, mat_id in all_mats:
             ok = self.arm_unload_material(mat_id)
             if ok:
                 with self._cargo_lock:
                     self._cargo.remove_material(cargo_id, mat_id)
-            success = success and ok
-        return success
+                unloaded[mat_id] += 1
+            else:
+                self.get_logger().error(
+                    f"[CARGO] Failed to unload material {mat_id} from cargo "
+                    f"{cargo_id} during overflow drop — planner/arm cargo "
+                    "state may now be inconsistent"
+                )
+        return unloaded
 
     # ------------------------------------------------------------------
     # Blocking helpers called by Executor (run in executor thread)
     # ------------------------------------------------------------------
 
+    def _bounded_wait(self, event: threading.Event, timeout_sec: float, desc: str) -> bool:
+        """Wait on event with a timeout so a dead server can never hang the
+        executor thread forever. Returns whether the event was set in time."""
+        completed = event.wait(timeout=timeout_sec if timeout_sec and timeout_sec > 0 else None)
+        if not completed:
+            self.get_logger().error(f"[TIMEOUT] {desc} did not complete within {timeout_sec}s")
+        return completed
+
     def navigate(self, station_id: int) -> bool:
-        """Navigate directly to station_id goal (positive) or sub_goal (negative)."""
+        """Navigate directly to station_id goal (positive) or sub_goal (negative).
+
+        Bounded by nav_timeout_sec; retries up to call_max_retries times on
+        timeout or rejection before giving up and returning False.
+        """
         self._nav_client.wait_for_server()
 
-        done = threading.Event()
-        success_holder = [False]
+        for attempt in range(1, self._call_max_retries + 2):
+            done = threading.Event()
+            success_holder = [False]
 
-        def _result_cb(future):
-            result = future.result()
-            success_holder[0] = result.result.success
-            done.set()
-
-        def _goal_cb(future):
-            gh = future.result()
-            if not gh.accepted:
-                self.get_logger().error(f"NavTask goal rejected for station {station_id}")
+            def _result_cb(future):
+                result = future.result()
+                success_holder[0] = result.result.success
                 done.set()
-                return
-            gh.get_result_async().add_done_callback(_result_cb)
 
-        goal = NavTask.Goal()
-        goal.station_id = station_id
-        self._nav_client.send_goal_async(goal).add_done_callback(_goal_cb)
-        done.wait()
+            def _goal_cb(future):
+                gh = future.result()
+                if not gh.accepted:
+                    self.get_logger().error(f"NavTask goal rejected for station {station_id}")
+                    done.set()
+                    return
+                gh.get_result_async().add_done_callback(_result_cb)
 
-        if not success_holder[0]:
-            self.get_logger().error(f"Navigation to station {station_id} failed")
-        else:
-            self._last_navigated_station = abs(station_id)
-        return success_holder[0]
+            goal = NavTask.Goal()
+            goal.station_id = station_id
+            self._nav_client.send_goal_async(goal).add_done_callback(_goal_cb)
+
+            completed = self._bounded_wait(
+                done, self._nav_timeout_sec,
+                f"navigate(station={station_id}) attempt {attempt}/{self._call_max_retries + 1}",
+            )
+            if completed and success_holder[0]:
+                self._last_navigated_station = abs(station_id)
+                return True
+
+            if attempt <= self._call_max_retries:
+                self.get_logger().warning(
+                    f"[RETRY] navigate(station={station_id}) attempt {attempt} "
+                    f"failed (timeout={not completed}) — retrying"
+                )
+
+        self.get_logger().error(
+            f"Navigation to station {station_id} failed after "
+            f"{self._call_max_retries + 1} attempt(s)"
+        )
+        return False
 
     def call_post_process(self) -> bool:
         """Trigger post-process exit maneuver (backup + rotate) after docking.
 
         Calls /robocup_navigator/post_process.  Returns True on success or if
         there was nothing pending (navigator responds NO_PENDING_POST_PROCESS).
+        Bounded by arm_timeout_sec so an unresponsive navigator cannot hang
+        the executor forever.
         """
         if not self._post_process_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().warning("[POST] post_process service unavailable")
@@ -743,7 +857,9 @@ class PlannerNode(Node):
             done.set()
 
         future.add_done_callback(_cb)
-        done.wait()
+        completed = self._bounded_wait(done, self._arm_timeout_sec, "post_process")
+        if not completed:
+            return False
 
         resp = result_holder[0]
         if resp is None or not resp.success:
@@ -795,20 +911,20 @@ class PlannerNode(Node):
                 self.get_logger().info(
                     f"[ARM] ASSEMBLE product={product_id} cargo={cargo_id}"
                 )
-                success = self._arm_call(
+                resp = self._arm_call(
                     'ASSEMBLE',
                     object_ids=[product_id],
                     location=cargo_id,
                     station_id=cargo_id,
                 )
-                handle.success = success
-                if success:
+                handle.success = resp.success
+                if resp.success:
                     with self._cargo_lock:
                         for c_id, mat_id in materials_to_consume:
                             self._cargo.remove_material(c_id, mat_id)
                 else:
                     self.get_logger().warning(
-                        f"[ARM] ASSEMBLE failed: product={product_id}"
+                        f"[ARM] ASSEMBLE failed: product={product_id} ({resp.message})"
                     )
             except Exception as e:
                 handle.success = False
@@ -843,44 +959,76 @@ class PlannerNode(Node):
         return events
 
     def wb_task(self, work_type: str, product_id: int) -> bool:
-        """Block until the workbench completes the requested work."""
+        """Block until the workbench completes the requested work.
+
+        Bounded by wb_timeout_sec; retries up to call_max_retries times.
+        """
         self._wb_client.wait_for_server()
 
-        done = threading.Event()
-        success_holder = [False]
+        for attempt in range(1, self._call_max_retries + 2):
+            done = threading.Event()
+            success_holder = [False]
 
-        def _result_cb(future):
-            success_holder[0] = future.result().result.success
-            done.set()
-
-        def _goal_cb(future):
-            gh = future.result()
-            if not gh.accepted:
-                self.get_logger().error(f"WbTask goal rejected ({work_type} {product_id})")
+            def _result_cb(future):
+                success_holder[0] = future.result().result.success
                 done.set()
-                return
-            gh.get_result_async().add_done_callback(_result_cb)
 
-        goal = WbTask.Goal()
-        goal.work_type = work_type
-        goal.product_id = product_id
-        self._wb_client.send_goal_async(goal).add_done_callback(_goal_cb)
-        done.wait()
-        return success_holder[0]
+            def _goal_cb(future):
+                gh = future.result()
+                if not gh.accepted:
+                    self.get_logger().error(f"WbTask goal rejected ({work_type} {product_id})")
+                    done.set()
+                    return
+                gh.get_result_async().add_done_callback(_result_cb)
+
+            goal = WbTask.Goal()
+            goal.work_type = work_type
+            goal.product_id = product_id
+            self._wb_client.send_goal_async(goal).add_done_callback(_goal_cb)
+
+            completed = self._bounded_wait(
+                done, self._wb_timeout_sec,
+                f"wb_task({work_type}, {product_id}) attempt {attempt}/{self._call_max_retries + 1}",
+            )
+            if completed and success_holder[0]:
+                return True
+            if attempt <= self._call_max_retries:
+                self.get_logger().warning(
+                    f"[RETRY] wb_task({work_type}, {product_id}) attempt {attempt} "
+                    f"failed (timeout={not completed}) — retrying"
+                )
+
+        self.get_logger().error(
+            f"wb_task({work_type}, {product_id}) failed after "
+            f"{self._call_max_retries + 1} attempt(s)"
+        )
+        return False
 
     def wb_task_async(self, work_type: str, product_id: int) -> WbTaskHandle:
         """Start a WbTask without blocking, so the AMR can drive off (e.g. to
         fetch the next recycling product) while the workbench is still
         working. Call wait_for_wb_task() before relying on the result.
+
+        A watchdog thread guarantees handle.event is set within
+        wb_timeout_sec even if the action server never calls back, so
+        wait_for_wb_task() can never hang the executor thread forever.
         """
         handle = WbTaskHandle(work_type, product_id)
         self._wb_client.wait_for_server()
 
         def _result_cb(future):
-            handle.success = future.result().result.success
+            if handle.event.is_set():
+                return  # watchdog already timed this call out
+            try:
+                handle.success = future.result().result.success
+            except Exception as e:
+                self.get_logger().error(f"[WB] {work_type} {product_id} result error: {e}")
+                handle.success = False
             handle.event.set()
 
         def _goal_cb(future):
+            if handle.event.is_set():
+                return
             gh = future.result()
             if not gh.accepted:
                 self.get_logger().error(
@@ -898,10 +1046,24 @@ class PlannerNode(Node):
             f"[WB] {work_type} {product_id} started asynchronously"
         )
         self._wb_client.send_goal_async(goal).add_done_callback(_goal_cb)
+
+        def _watchdog():
+            if not handle.event.wait(timeout=self._wb_timeout_sec):
+                self.get_logger().error(
+                    f"[TIMEOUT] WbTask {work_type} {product_id} did not complete "
+                    f"within {self._wb_timeout_sec}s — treating as failed"
+                )
+                handle.success = False
+                handle.event.set()
+
+        threading.Thread(
+            target=_watchdog, daemon=True, name=f'wb_watchdog_{product_id}'
+        ).start()
         return handle
 
     def wait_for_wb_task(self, handle: WbTaskHandle) -> bool:
-        """Block until the given asynchronous WbTask completes."""
+        """Block until the given asynchronous WbTask completes (or its
+        watchdog times it out — see wb_task_async)."""
         handle.event.wait()
         return bool(handle.success)
 
@@ -911,57 +1073,134 @@ class PlannerNode(Node):
         object_ids: list,
         location: int = 0,
         station_id: int = None,
-    ) -> bool:
-        """Send one ArmCommand service call to the arm. Blocks until response."""
-        with self._arm_call_lock:
-            self._arm_client.wait_for_service()
+    ):
+        """Send one ArmCommand service call to the arm. Bounded by
+        arm_timeout_sec; retries up to call_max_retries times.
 
-            req = ArmCommand.Request()
-            req.action = action
-            req.object_ids = [int(x) for x in object_ids]
-            req.location = int(location)
-            req.station_id = int(station_id if station_id is not None else location)
+        Returns the full ArmCommand.Response (not just a bool) so callers can
+        inspect .message / .slots / .object_ids — the response used to be
+        discarded down to a single bool, which meant a mismatch between what
+        the planner asked for and what the arm actually reports moving could
+        never be detected (see Known Issues #1 in algorithm_description.md).
+        On repeated timeout/failure, returns a synthetic failed response
+        instead of raising, so callers keep a uniform `.success` check.
+        """
+        req = ArmCommand.Request()
+        req.action = action
+        req.object_ids = [int(x) for x in object_ids]
+        req.location = int(location)
+        req.station_id = int(station_id if station_id is not None else location)
 
-            future = self._arm_client.call_async(req)
-            done = threading.Event()
+        last_resp = None
+        for attempt in range(1, self._call_max_retries + 2):
+            with self._arm_call_lock:
+                self._arm_client.wait_for_service()
+                future = self._arm_client.call_async(req)
+                done = threading.Event()
 
-            def _cb(f):
-                done.set()
+                def _cb(f):
+                    done.set()
 
-            future.add_done_callback(_cb)
-            done.wait()
-            return future.result().success
+                future.add_done_callback(_cb)
+                completed = self._bounded_wait(
+                    done, self._arm_timeout_sec,
+                    f"arm_call({action}, ids={req.object_ids}) "
+                    f"attempt {attempt}/{self._call_max_retries + 1}",
+                )
+
+            if completed:
+                try:
+                    last_resp = future.result()
+                except Exception as e:
+                    self.get_logger().error(f"[ARM] {action} response error: {e}")
+                    last_resp = None
+
+                if last_resp is not None and last_resp.success:
+                    return last_resp
+
+                if last_resp is not None and attempt <= self._call_max_retries:
+                    self.get_logger().warning(
+                        f"[RETRY] arm_call({action}) attempt {attempt} reported "
+                        f"failure ({last_resp.message}) — retrying"
+                    )
+                    continue
+
+            if attempt <= self._call_max_retries:
+                self.get_logger().warning(
+                    f"[RETRY] arm_call({action}) attempt {attempt} timed out — retrying"
+                )
+
+        self.get_logger().error(
+            f"[ARM] {action} (ids={req.object_ids}) failed after "
+            f"{self._call_max_retries + 1} attempt(s)"
+        )
+        if last_resp is not None:
+            return last_resp
+        failure = ArmCommand.Response()
+        failure.success = False
+        failure.message = 'timeout or repeated failure'
+        return failure
 
     def arm_pick_material(self, station_id: int, material_id: int) -> bool:
         """Pick one material block from a storage station and place it on cargo."""
-        success = self._arm_call(
+        resp = self._arm_call(
             ARM_PICK,
             object_ids=[material_id],
             location=station_id,
             station_id=station_id,
         )
-        if success:
+        if resp.success:
             with self._cargo_lock:
                 self._cargo.place_material(material_id)
-        return success
+        return resp.success
 
     def arm_pick_product(self, station_id: int, product_id: int) -> bool:
-        """Pick an assembled product from a customer counter (for recycling)."""
-        return self._arm_call(
+        """Pick an assembled product from a customer counter (for recycling)
+        onto cargo 1.
+
+        Guards cargo 1 occupancy explicitly (CargoManager.try_occupy_cargo1)
+        instead of trusting caller sequencing alone — if a previous recycled
+        product was never unloaded, this refuses the pick and fails loudly
+        rather than silently letting two products collide on cargo 1
+        (see Known Issues #1 in algorithm_description.md).
+        """
+        with self._cargo_lock:
+            if not self._cargo.try_occupy_cargo1(product_id):
+                occupant = self._cargo.cargo1_occupant
+                self.get_logger().error(
+                    f"[CARGO] Refusing to pick product {product_id}: cargo 1 "
+                    f"already holds product {occupant} — it was never unloaded. "
+                    "This indicates a sequencing bug upstream."
+                )
+                return False
+
+        resp = self._arm_call(
             ARM_PICK,
             object_ids=[product_id],
             location=station_id,
             station_id=station_id,
         )
+        if not resp.success:
+            with self._cargo_lock:
+                self._cargo.release_cargo1(product_id)
+            return False
+
+        if resp.object_ids and product_id not in [int(x) for x in resp.object_ids]:
+            self.get_logger().warning(
+                f"[CARGO] arm reported picking object_ids={list(resp.object_ids)} "
+                f"but planner expected product {product_id} — possible identity mismatch"
+            )
+        return True
 
     def arm_unload_material(self, object_id: int) -> bool:
         """Unload a material block from cargo to the workbench.
         The arm locates the block via cargo_manager FIND_OBJECT."""
-        return self._arm_call(
+        resp = self._arm_call(
             ARM_PLACE,
             object_ids=[object_id],
             location=0,
         )
+        return resp.success
 
     def arm_return_material_to_storage(self, material_id: int, station_id: int) -> bool:
         """Return a surplus recycled material block from cargo to its designated
@@ -969,31 +1208,45 @@ class PlannerNode(Node):
         self.get_logger().info(
             f"[ARM] return surplus material_id={material_id} to storage {station_id}"
         )
-        success = self._arm_call(
+        resp = self._arm_call(
             ARM_PLACE,
             object_ids=[material_id],
             location=station_id,
             station_id=station_id,
         )
-        if success:
+        if resp.success:
             with self._cargo_lock:
                 for cargo_id, mat_id in self._cargo.all_materials():
                     if mat_id == material_id:
                         self._cargo.remove_material(cargo_id, mat_id)
                         break
-        return success
+        return resp.success
 
     def arm_unload_product_to_workbench(self, product_id: int, station_id: int) -> bool:
-        """Unload a recycled product from cargo 1 to the current workbench."""
+        """Unload a recycled product from cargo 1 to the current workbench.
+
+        Releases cargo 1 occupancy on success (see arm_pick_product); logs a
+        loud warning if the release doesn't match what we thought was
+        occupying cargo 1, since that indicates the planner's and arm's view
+        of cargo state have diverged.
+        """
         self.get_logger().info(
             f"[ARM] unload recycled product_id={product_id} to workbench {station_id}"
         )
-        return self._arm_call(
+        resp = self._arm_call(
             ARM_PLACE,
             object_ids=[product_id],
             location=station_id,
             station_id=station_id,
         )
+        if resp.success:
+            with self._cargo_lock:
+                if not self._cargo.release_cargo1(product_id):
+                    self.get_logger().warning(
+                        f"[CARGO] release_cargo1({product_id}) mismatch — cargo 1 "
+                        f"occupant was {self._cargo.cargo1_occupant!r}"
+                    )
+        return resp.success
 
     def get_current_station_id(self) -> Optional[int]:
         """Return the station_id of the last successfully completed navigation, or None."""
@@ -1005,11 +1258,12 @@ class PlannerNode(Node):
         self.get_logger().info(
             f"[ARM] deliver product_id={product_id} from cargo {from_cargo_id}"
         )
-        return self._arm_call(
+        resp = self._arm_call(
             ARM_DELIVER,
             object_ids=[product_id],
             location=0,
         )
+        return resp.success
 
 
 # ------------------------------------------------------------------

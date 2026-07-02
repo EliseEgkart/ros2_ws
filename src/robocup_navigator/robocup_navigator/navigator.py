@@ -45,7 +45,7 @@ class RotationProfile:
 
 
 class RobocupNavigator(Node):
-    """Action server that converts station IDs into stable Nav2 sequences."""
+    """Action server for station waypoint navigation and cmd_vel post-process."""
 
     def __init__(self, node_name='robocup_navigator',
                  enable_action_interfaces=True):
@@ -96,6 +96,10 @@ class RobocupNavigator(Node):
                 'post_process_service_name',
                 '/robocup_navigator/post_process',
             ),
+        )
+        self.declare_parameter(
+            'auto_post_process_after_goal',
+            default_param('auto_post_process_after_goal', False),
         )
 
         self.declare_parameter(
@@ -361,6 +365,9 @@ class RobocupNavigator(Node):
         )
         self._fail_on_alignment_timeout = bool(
             self.get_parameter('fail_on_alignment_timeout').value
+        )
+        self._auto_post_process_after_goal = bool(
+            self.get_parameter('auto_post_process_after_goal').value
         )
         self._backup_after_goal = bool(
             self.get_parameter('backup_after_goal').value
@@ -646,9 +653,28 @@ class RobocupNavigator(Node):
                 if not ok:
                     return False, reason
 
-            self._pending_post_process_profile = (
-                profile if profile.post_process else None
-            )
+            if profile.post_process:
+                if self._auto_post_process_after_goal:
+                    ok, reason = self._run_departure_post_process(
+                        profile,
+                        goal_handle,
+                    )
+                    if not ok:
+                        return False, reason
+                    self._pending_post_process_profile = None
+                else:
+                    self._pending_post_process_profile = profile
+                    self.get_logger().info(
+                        f'[POST PENDING] station={profile.station_id}, '
+                        f'name="{profile.name}", '
+                        f'waypoint={self._last_goal_waypoint(profile)}'
+                    )
+            else:
+                self._pending_post_process_profile = None
+                self.get_logger().info(
+                    f'[POST SKIP] station={profile.station_id}, '
+                    'post_process=false.'
+                )
 
         self._publish_feedback(
             goal_handle,
@@ -672,15 +698,27 @@ class RobocupNavigator(Node):
         try:
             profile = self._pending_post_process_profile
             if profile is None:
+                self.get_logger().info(
+                    '[POST SKIP] No pending post-process profile.'
+                )
                 response.success = True
                 response.message = 'NO_PENDING_POST_PROCESS'
                 return response
 
-            ok, reason = self._run_departure_post_process(profile)
+            self.get_logger().info(
+                f'[POST START] station={profile.station_id}, '
+                f'name="{profile.name}", '
+                f'waypoint={self._last_goal_waypoint(profile)}'
+            )
+            ok, reason = self._run_departure_post_process(profile, None)
             if ok:
                 self._pending_post_process_profile = None
                 response.success = True
                 response.message = ''
+                self.get_logger().info(
+                    f'[POST DONE] station={profile.station_id}, '
+                    f'name="{profile.name}"'
+                )
             else:
                 response.success = False
                 response.message = reason
@@ -850,15 +888,27 @@ class RobocupNavigator(Node):
             self.get_logger().error(f'Invalid waypoint "{name}": {exc}')
             return None
 
-    def _run_departure_post_process(self, profile: StationProfile):
+    def _run_departure_post_process(self, profile: StationProfile,
+                                    goal_handle=None):
+        if not self._backup_after_goal and not self._rotate_after_backup:
+            self.get_logger().warn(
+                'Post-process requested, but backup_after_goal and '
+                'rotate_after_backup are both false.'
+            )
+            return True, ''
+
         if self._backup_after_goal:
-            ok, reason = self._run_backup(None, profile)
+            ok, reason = self._run_backup(goal_handle, profile)
             if not ok:
                 return False, reason
 
         if self._rotate_after_backup:
             waypoint_name = self._last_goal_waypoint(profile)
-            ok, reason = self._run_rotation(None, profile, waypoint_name)
+            ok, reason = self._run_rotation(
+                goal_handle,
+                profile,
+                waypoint_name,
+            )
             if not ok:
                 return False, reason
 

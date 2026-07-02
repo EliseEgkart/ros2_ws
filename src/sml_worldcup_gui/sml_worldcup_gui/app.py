@@ -17,10 +17,12 @@ both publish nav_msgs/Odometry on the same topic.
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
 
 from . import waypoints
 from .canvas_view import ArenaCanvas
+from .layout_config import load_layout_overrides
 from .ros_bridge import GuiBridge
 from .side_panel import SidePanel
 
@@ -48,10 +50,13 @@ class WorldCupGuiApp:
                 'will show as "no waypoint" until robocup_waypoint.yaml is available.'
             )
 
+        layout_overrides = load_layout_overrides(node.layout_yaml_path)
+
         self.side_panel = SidePanel(container)
         canvas_frame = tk.Frame(container, bg='#0b1220')
         canvas_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.canvas = ArenaCanvas(canvas_frame, real_positions, on_select=self.side_panel.show_station)
+        self.canvas = ArenaCanvas(canvas_frame, real_positions, on_select=self.side_panel.show_station,
+                                   layout_overrides=layout_overrides)
 
         side_param = node.side
         view = {'a': 'a', 'side_a': 'a', 'b': 'b', 'side_b': 'b'}.get(side_param, 'all')
@@ -73,7 +78,11 @@ class WorldCupGuiApp:
     def _on_odom(self, odom_msg) -> None:
         x = odom_msg.pose.pose.position.x
         y = odom_msg.pose.pose.position.y
-        self.canvas.set_amr_real_position((x, y), live=True)
+        q = odom_msg.pose.pose.orientation
+        # Planar robot: yaw-only extraction from the quaternion, ignoring
+        # roll/pitch (the AMR doesn't tilt on this arena floor).
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.canvas.set_amr_real_position((x, y), live=True, yaw=yaw)
 
 
 def main(args=None) -> None:

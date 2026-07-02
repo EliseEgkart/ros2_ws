@@ -44,6 +44,19 @@ from robocup_pkg.srv import ArmCommand
 from std_srvs.srv import Trigger
 
 
+def _default_layout_yaml() -> str:
+    """Resolve the optional cosmetic station_layout.yaml shipped with this
+    package's own share dir. Returns '' if not installed — callers must
+    treat that as "no overrides, pure real-waypoint mode", not an error."""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        import os
+        path = os.path.join(get_package_share_directory('sml_worldcup_gui'), 'config', 'station_layout.yaml')
+        return path if os.path.isfile(path) else ''
+    except Exception:
+        return ''
+
+
 def _default_waypoint_yaml() -> str:
     """Resolve robocup_waypoint.yaml from the installed robocup_planner share
     dir, same file the real planner and navigator use. Returns '' (not an
@@ -94,11 +107,13 @@ class GuiRosNode(Node):
         self.declare_parameter('health_check_period_sec', 1.0)
         self.declare_parameter('side', 'all')
         self.declare_parameter('waypoint_yaml', _default_waypoint_yaml())
+        self.declare_parameter('layout_yaml', _default_layout_yaml())
 
         topic_name = self.get_parameter('topic_name').value
         odom_topic = self.get_parameter('odom_topic').value
         self.side = str(self.get_parameter('side').value).strip().lower()
         self.waypoint_yaml_path = str(self.get_parameter('waypoint_yaml').value).strip()
+        self.layout_yaml_path = str(self.get_parameter('layout_yaml').value).strip()
 
         self.events: 'queue.Queue' = queue.Queue()
 

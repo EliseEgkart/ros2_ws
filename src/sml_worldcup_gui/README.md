@@ -70,6 +70,34 @@ internal self-consistency (station ↔ AMR alignment) was prioritized over
 matching the picture, since that's what makes the GUI usable for real
 monitoring.
 
+### Optional cosmetic layout overrides (`config/station_layout.yaml`)
+
+If you want the picture to look more like `map.jpg` (or just want stations
+laid out more legibly) without giving up the accuracy guarantee above, edit
+`config/station_layout.yaml` (installed to the package share dir, loaded via
+the `layout_yaml` parameter). Any station **named** in that file is drawn at
+the given canvas `{x, y}` instead of its real-waypoint-derived position; any
+station left out keeps the accuracy-guaranteed placement. The AMR marker
+itself is **never** affected by this file — it always uses the real
+`waypoint_yaml` transform, so overriding a station's box is a purely visual
+choice, not something that can silently break monitoring accuracy for the
+one thing that most needs to stay correct.
+
+The file also supports purely decorative `boxes` (e.g. start/goal areas,
+wait zones) and free-floating text `labels`, both drawn under/around the
+stations. See the comments in the shipped example file for the exact
+schema. Point `layout_yaml:=""` at launch (or delete the file) to disable
+overrides entirely and fall back to 100% real-waypoint positioning.
+
+## AMR orientation
+
+The AMR marker is a circle with a **yellow triangular nose** pointing in the
+direction of travel and a small **red dot** on the opposite edge marking the
+rear — computed from the yaw encoded in `Odometry.pose.pose.orientation`
+(the same quaternion both `robocup_navigator/current_pose.py` and
+`mock_nav_node.py`'s simulated odometry publisher populate). If no
+orientation data has arrived yet, the marker falls back to a plain dot.
+
 ## Run
 
 ```bash
@@ -95,6 +123,7 @@ Other parameters (all optional, `--ros-args -p name:=value`):
 | `arm_service` | `/amr_robot_command` | Arm liveness probe |
 | `post_process_service` | `/robocup_navigator/post_process` | Post-process liveness probe |
 | `waypoint_yaml` | resolved via `ament_index` against `robocup_planner`'s installed share dir | Real station coordinates driving both station placement and the AMR marker |
+| `layout_yaml` | resolved via `ament_index` against this package's own installed share dir (`config/station_layout.yaml`) | Optional cosmetic station/box/label overrides — see above |
 | `health_check_period_sec` | `1.0` | How often the connection indicators refresh |
 
 The `worldcup_gui` console-script alias still works for compatibility with
@@ -105,10 +134,14 @@ older invocations.
 ```
 sml_worldcup_gui/
 ├── layout_schema.py    # role colors/labels + canvas geometry constants
+├── layout_config.py    # loads config/station_layout.yaml cosmetic overrides
 ├── station_roles.py    # parses arena_layout station names into roles
 ├── waypoints.py         # robocup_waypoint.yaml -> the one shared real-to-canvas transform
 ├── ros_bridge.py        # rclpy node, thread-safe event queue
 ├── canvas_view.py       # tk.Canvas arena renderer (stations + AMR marker)
 ├── side_panel.py        # orders / connection health / selected station
 └── app.py                # entry point wiring the above together
+
+config/
+└── station_layout.yaml  # optional, user-editable cosmetic layout overrides
 ```

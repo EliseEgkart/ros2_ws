@@ -256,7 +256,15 @@ class Executor:
                 self._soft(self._node.call_post_process(), "call_post_process (overflow)")
 
         # Collect whatever disassembly is still pending after the last pickup.
+        # The post_process call right after starting that disassembly (above)
+        # backs the AMR away from the workbench and rotates it for the exit
+        # maneuver, so — unlike the collect call inside the loop, which always
+        # runs right after a fresh navigate_goal(workbench_id) re-dock for the
+        # *next* product — this tail call needs its own re-dock first. Without
+        # it the arm tries to pick materials from an AMR that's still facing
+        # away from the workbench post-post_process.
         if pending_wb_handle is not None:
+            self._require(self._node.navigate_goal(workbench_id), f"navigate_goal({workbench_id})")
             self._collect_recycled_materials(
                 pending_wb_handle, pending_wb_pid, workbench_id
             )

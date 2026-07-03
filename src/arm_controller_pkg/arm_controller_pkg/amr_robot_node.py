@@ -213,15 +213,15 @@ PICK_OFFSET = {
     # --- Products ---
     34:    {},               # battery
     13:    {},               # magnet
-    81:    {},   # e_stop
+    81:    {'z': 15.0},   # e_stop
     442:   {},               # carrot
     241:   {},               # traffic_light
-    462:   {},               # small_tree
-    711:   {},     # hammer 로봇베이스 기준 안쪽은 x+ 
-    4482:  {},               # big_carrot
-    8518:  {},   # burger
-    48132: {},               # ice_cream
-    46262: {'z': 15.0,},      # big_tree 벅서 빅트리 회전제한 -90~90
+    462:   {'z': 20.0},               # small_tree
+    711:   {'x': -25.0, 'z': 20.0},     # hammer 로봇베이스 기준 안쪽은 x+ 
+    4482:  {'x': -20.0, 'z': 25.0},               # big_carrot
+    8518:  {'y': -3.0, 'z': 30.0},   # burger
+    48132: {'z': 25.0},               # ice_cream
+    46262: {'z': 30.0},      # big_tree 벅서 빅트리 회전제한 -90~90
 }
 
 
@@ -236,8 +236,8 @@ UNLOAD_Z_DOWN_MM = 70.0
 UNLOAD_Z_UP_MM = -70.0
 
 # --- 슬롯 1 전용 Z 상수 (LOAD/UNLOAD 공통) ---
-SLOT1_Z_DOWN_MM = 25.0
-SLOT1_Z_UP_MM   = -25.0
+SLOT1_Z_DOWN_MM = 30.0
+SLOT1_Z_UP_MM   = -30.0
 
 # --- UNLOAD X 상수 (슬롯 7/8 언로드 시 Cargo Tool X 방향 이동) ---
 UNLOAD_X_DOWN_MM = 90.0
@@ -287,10 +287,34 @@ ASSEMBLY_Z_DOWN_MM = 70.0   # layer 0 기준 블록 내려놓기 하강 거리 (
 ASSEMBLY_Z_UP_MM   = -70.0  # layer 0 기준 블록 내려놓기 상승 거리 (mm)
 BLOCK_H_MM         = 18.0   # 블록 1개 높이 (mm)
 
-# --- BigTree (46262) 전용 조립 상수 (재료슬롯 2-6 안에서 조립, layer_index 고정) ---
-BIG_TREE_STEP2_Z_OFFSET_MM = 19.0   # slot_x layer2: 다른 슬롯의 6을 결합 (70-19=51mm)
-BIG_TREE_STEP3_Z_OFFSET_MM = 38.0   # slot_x layer3: 다른 슬롯의 2를 결합, 그리퍼 유지 (70-38=32mm)
-BIG_TREE_FINAL_Z_OFFSET_MM = 47.0   # y0 layer0: 완성 스택을 4 위에 최종 결합 (70-47=23mm)
+# --- OLD BigTree (46262) 전용 조립 상수: 재료슬롯 2-6 내부 조립 버전 비활성화 ---
+# BIG_TREE_STEP2_Z_OFFSET_MM = 19.0   # slot_x layer2: 다른 슬롯의 6을 결합 (70-19=51mm)
+# BIG_TREE_STEP3_Z_OFFSET_MM = 38.0   # slot_x layer3: 다른 슬롯의 2를 결합, 그리퍼 유지 (70-38=32mm)
+# BIG_TREE_FINAL_Z_OFFSET_MM = 47.0   # y0 layer0: 완성 스택을 4 위에 최종 결합 (70-47=23mm)
+
+# --- BigTree (46262) 전용 조립 상수: slot 7/8 고정 조립 버전 ---
+BIG_TREE_BASE_SLOT = 7
+BIG_TREE_STAGE_SLOT = 8
+
+BIG_TREE_BASE_X_MM = 0.0
+BIG_TREE_STAGE_LEFT_X_MM = -32.0
+BIG_TREE_STAGE_RIGHT_X_MM = 16.5
+BIG_TREE_STAGE_MID_X_MM = 0.0
+BIG_TREE_STAGE_PICKUP_X_MM = -16.5
+BIG_TREE_MERGE_PLACE_X_MM = 0.0
+BIG_TREE_TOP_2_X_MM = 0.0
+
+BIG_TREE_STAGE_LAYER_TOP = 0.9
+
+BIG_TREE_STAGE_PICKUP_Z_DOWN_MM = 51.0
+BIG_TREE_STAGE_PICKUP_Z_UP_MM = -51.0
+BIG_TREE_STAGE_MERGE_Z_DOWN_MM = 52.0
+BIG_TREE_STAGE_MERGE_Z_UP_MM = -52.0
+BIG_TREE_TOP_2_Z_DOWN_MM = 16.0
+BIG_TREE_TOP_2_Z_UP_MM = -16.0
+
+BIG_TREE_STAGE_GROUP_IDS = (6, 2, 6)
+BIG_TREE_FINAL_STACK_IDS = (4, 6, 2, 6, 2)
 
 # --- IceCream(48132) / BigTree(46262) 재료슬롯(2-6) 스테이징 조립 공통 ---
 # 재료슬롯(2-6)에 임시로 쌓아둔 재료끼리 결합할 때, 그 슬롯에 실제로 몇 개가
@@ -1175,10 +1199,14 @@ class AmrRobotNode(Node):
         #   - 장축(long)  : 비전으로 돌아가지 않고 그 자리에서 J6만 돌려 재파지한다.
         #                   재파지 후에도 여전히 fail/long 이면 재시도하지 않고
         #                   moving pose 로 복귀 후 실패 처리한다.
+        #   완성품(FINISHED_PRODUCTS)은 이 pos 기반 판정을 하지 않는다 - grip 성공
+        #   여부만 확인하고 바로 다음 단계로 넘어간다.
+        skip_grip_judgment = object_id in FINISHED_PRODUCTS
+        grip_attempts = 1 if skip_grip_judgment else MAX_LOAD_GRIP_ATTEMPTS
         grip_pos = None
         grip_type = None
 
-        for attempt in range(1, MAX_LOAD_GRIP_ATTEMPTS + 1):
+        for attempt in range(1, grip_attempts + 1):
             if not self.move_j_checked(
                 VISION_LOAD_JOINT_DEG, label=f'vision load pose (attempt {attempt})'
             ):
@@ -1262,9 +1290,13 @@ class AmrRobotNode(Node):
                     'message': 'grip failed',
                 }
 
+            if skip_grip_judgment:
+                self.get_logger().info(f'[AMR] product grip pos={grip_pos} (판정 생략)')
+                break
+
             grip_type = classify_grip_pos(grip_pos)
             self.get_logger().info(
-                f'[AMR] attempt {attempt}/{MAX_LOAD_GRIP_ATTEMPTS}: grip pos={grip_pos} -> {grip_type}'
+                f'[AMR] attempt {attempt}/{grip_attempts}: grip pos={grip_pos} -> {grip_type}'
             )
 
             if grip_type == 'fail':
@@ -1274,7 +1306,7 @@ class AmrRobotNode(Node):
                     [0.0, 0.0, -Z_MARGIN, 0.0, 0.0, 0.0],
                     label='retreat after mis-grasp',
                 )
-                if attempt == MAX_LOAD_GRIP_ATTEMPTS:
+                if attempt == grip_attempts:
                     self.go_moving_pose()
                     return {
                         'success': False,
@@ -1762,6 +1794,332 @@ class AmrRobotNode(Node):
             if len(res.stack) == 0:
                 return slot
         return None
+
+    def find_material_source(self, object_id, exclude_slot=None):
+        """object_id가 있는 슬롯을 찾는다. exclude_slot이 주어지면 그 슬롯은 제외하고
+        찾되(FIND_OBJECT_EXCLUDING), 실패하면 exclude_slot 포함 전체에서 다시 찾는다
+        (단, 그 결과가 exclude_slot 자신이면 그대로 실패로 둔다 - 다른 슬롯에 없다는 뜻)."""
+        if exclude_slot is None:
+            return self.call_cargo('FIND_OBJECT', object_id=object_id)
+
+        res = self.call_cargo('FIND_OBJECT_EXCLUDING', object_id=object_id, slot=exclude_slot)
+        if res and res.success:
+            return res
+
+        fallback = self.call_cargo('FIND_OBJECT', object_id=object_id)
+        if fallback and fallback.success and fallback.slot != exclude_slot:
+            return fallback
+        return res
+
+    def pick_material_for_assembly(self, material_id, label_prefix, exclude_slot=None, direct=True):
+        """재료슬롯(2-6)에서 material_id를 찾아 집어 든다 (그리퍼는 문 채로 반환).
+        exclude_slot이 주어지면 그 슬롯은 검색에서 제외한다 (같은 object_id가 두
+        슬롯에 나뉘어 있을 때, 이미 확보한 슬롯 말고 다른 슬롯에서 찾아야 하는 경우).
+        direct=True(기본)면 ASSEMBLY_TRANSIT_JOINT_DEG를 거쳐 소스 슬롯 조인트(UNLOAD_SLOT_JOINTS)로
+        직행하고, direct=False면 공통 웨이포인트를 전부 거치는 move_to_slot()을 사용한다
+        (한 시퀀스의 맨 첫 픽업에서만 direct=False로 안전하게 진입한다)."""
+        res = self.find_material_source(material_id, exclude_slot=exclude_slot)
+        if not res or not res.success:
+            return {
+                'success': False,
+                'slot': -1,
+                'message': f'{label_prefix}: material {material_id} not found',
+            }
+
+        slot = res.slot
+        layer_index = res.layer_index
+
+        if not self.call_gripper(False):
+            return {
+                'success': False,
+                'slot': slot,
+                'message': f'{label_prefix}: gripper open failed',
+            }
+
+        if direct:
+            slot_joint = UNLOAD_SLOT_JOINTS.get(slot * 10 + layer_index)
+            if slot_joint is None:
+                self.get_logger().error(
+                    f'[AMR] {label_prefix}: no unload joint for slot={slot} layer={layer_index}')
+                return {
+                    'success': False,
+                    'slot': slot,
+                    'message': f'{label_prefix}: no unload joint for slot={slot} layer={layer_index}',
+                }
+            if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label=f'{label_prefix} pickup transit'):
+                self.return_from_slot(slot, for_unload=True)
+                return {
+                    'success': False,
+                    'slot': slot,
+                    'message': f'{label_prefix}: transit move failed',
+                }
+            if not self.move_j_checked(slot_joint, label=f'{label_prefix} to slot={slot}'):
+                self.return_from_slot(slot, for_unload=True)
+                return {
+                    'success': False,
+                    'slot': slot,
+                    'message': f'{label_prefix}: move to source slot failed',
+                }
+        else:
+            if not self.move_to_slot(slot, for_unload=True, layer_index=layer_index):
+                return {
+                    'success': False,
+                    'slot': slot,
+                    'message': f'{label_prefix}: move to source slot failed',
+                }
+
+        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                       label=f'{label_prefix} z down'):
+            self.return_from_slot(slot, for_unload=True)
+            return {
+                'success': False,
+                'slot': slot,
+                'message': f'{label_prefix}: source z down failed',
+            }
+
+        if not self.call_gripper(True):
+            self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0],
+                                    label=f'{label_prefix} retreat after grip failure')
+            self.return_from_slot(slot, for_unload=True)
+            return {
+                'success': False,
+                'slot': slot,
+                'message': f'{label_prefix}: grip failed',
+            }
+
+        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0],
+                                       label=f'{label_prefix} z up'):
+            self.return_from_slot(slot, for_unload=True)
+            return {
+                'success': False,
+                'slot': slot,
+                'message': f'{label_prefix}: source z up failed',
+            }
+
+        res = self.call_cargo('CLEAR', slot=slot, object_id=material_id)
+        if not res or not res.success:
+            self.return_from_slot(slot, for_unload=True)
+            return {
+                'success': False,
+                'slot': slot,
+                'message': f'{label_prefix}: cargo CLEAR {material_id} failed',
+            }
+
+        return {
+            'success': True,
+            'slot': slot,
+            'layer_index': layer_index,
+        }
+
+    def place_gripped_to_assembly_slot(self, target_slot, z_down_mm, label_prefix,
+                                       x_offset=0.0, cargo_set_ids=None, direct=True):
+        """현재 그리퍼에 문 재료(또는 재료 묶음)를 조립슬롯(target_slot)에 x_offset만큼
+        Tool X로 비켜서 내려놓는다. 놓고 나면 cargo_set_ids에 있는 각 object_id를
+        target_slot에 SET한다 (묶음을 통째로 옮긴 경우 여러 id를 한 번에 등록).
+        direct=True(기본)면 ASSEMBLY_TRANSIT_JOINT_DEG를 거쳐 target_slot 조인트(LOAD_SLOT_JOINTS)로
+        직행하고, direct=False면 공통 웨이포인트를 전부 거치는 move_to_slot()을 사용한다."""
+        if direct:
+            target_joint = LOAD_SLOT_JOINTS.get(target_slot)
+            if target_joint is None:
+                self.get_logger().error(f'[AMR] {label_prefix}: no load joint for target_slot={target_slot}')
+                return {
+                    'success': False,
+                    'slot': target_slot,
+                    'message': f'{label_prefix}: no load joint for target_slot={target_slot}',
+                }
+            if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label=f'{label_prefix} place transit'):
+                self.return_from_slot(target_slot)
+                return {
+                    'success': False,
+                    'slot': target_slot,
+                    'message': f'{label_prefix}: transit move failed',
+                }
+            if not self.move_j_checked(target_joint, label=f'{label_prefix} to target_slot={target_slot}'):
+                self.return_from_slot(target_slot)
+                return {
+                    'success': False,
+                    'slot': target_slot,
+                    'message': f'{label_prefix}: move to assembly slot failed',
+                }
+        else:
+            if not self.move_to_slot(target_slot):
+                return {
+                    'success': False,
+                    'slot': target_slot,
+                    'message': f'{label_prefix}: move to assembly slot failed',
+                }
+
+        if abs(x_offset) > 1e-6:
+            if not self.move_l_rel_checked([x_offset, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                           label=f'{label_prefix} x offset',
+                                           ref_frame=rb.ReferenceFrame.Tool):
+                self.return_from_slot(target_slot)
+                return {
+                    'success': False,
+                    'slot': target_slot,
+                    'message': f'{label_prefix}: x offset failed',
+                }
+
+        if not self.move_l_rel_checked([0.0, 0.0, z_down_mm, 0.0, 0.0, 0.0],
+                                       label=f'{label_prefix} z down',
+                                       ref_frame=rb.ReferenceFrame.Tool):
+            self.return_from_slot(target_slot)
+            return {
+                'success': False,
+                'slot': target_slot,
+                'message': f'{label_prefix}: assembly z down failed',
+            }
+
+        if not self.call_gripper(False):
+            self.move_l_rel_checked([0.0, 0.0, -z_down_mm, 0.0, 0.0, 0.0],
+                                    label=f'{label_prefix} retreat after release failure',
+                                    ref_frame=rb.ReferenceFrame.Tool)
+            if abs(x_offset) > 1e-6:
+                self.move_l_rel_checked([-x_offset, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                        label=f'{label_prefix} x return after release failure',
+                                        ref_frame=rb.ReferenceFrame.Tool)
+            self.return_from_slot(target_slot)
+            return {
+                'success': False,
+                'slot': target_slot,
+                'message': f'{label_prefix}: release failed',
+            }
+
+        if not self.move_l_rel_checked([0.0, 0.0, -z_down_mm, 0.0, 0.0, 0.0],
+                                       label=f'{label_prefix} z up',
+                                       ref_frame=rb.ReferenceFrame.Tool):
+            self.return_from_slot(target_slot)
+            return {
+                'success': False,
+                'slot': target_slot,
+                'message': f'{label_prefix}: assembly z up failed',
+            }
+
+        if abs(x_offset) > 1e-6:
+            if not self.move_l_rel_checked([-x_offset, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                           label=f'{label_prefix} x return',
+                                           ref_frame=rb.ReferenceFrame.Tool):
+                self.return_from_slot(target_slot)
+                return {
+                    'success': False,
+                    'slot': target_slot,
+                    'message': f'{label_prefix}: x return failed',
+                }
+
+        for material_id in cargo_set_ids or []:
+            res = self.call_cargo('SET', slot=target_slot, object_id=material_id)
+            if not res or not res.success:
+                self.return_from_slot(target_slot)
+                return {
+                    'success': False,
+                    'slot': target_slot,
+                    'message': f'{label_prefix}: cargo SET {material_id} failed',
+                }
+
+        return {'success': True, 'slot': target_slot}
+
+    def pickup_big_tree_stage_group_from_slot8(self):
+        """BigTree 전용: slot 8(BIG_TREE_STAGE_SLOT)에 부분조립해 둔 6+2+6 묶음을
+        BIG_TREE_STAGE_PICKUP_X_MM만큼 비켜서 통째로 집어 든다 (그리퍼는 문 채로 반환).
+        시퀀스 중간에만 호출되므로(맨 첫 픽업이 아님) 항상 TRANSIT 경유 직행으로 slot 8까지 간다."""
+        if not self.call_gripper(False):
+            return {
+                'success': False,
+                'slot': BIG_TREE_STAGE_SLOT,
+                'message': 'big_tree stage pickup: gripper open failed',
+            }
+
+        stage_joint = LOAD_SLOT_JOINTS.get(BIG_TREE_STAGE_SLOT)
+        if stage_joint is None:
+            self.get_logger().error(
+                f'[AMR] big_tree stage pickup: no load joint for slot={BIG_TREE_STAGE_SLOT}')
+            return {
+                'success': False,
+                'slot': BIG_TREE_STAGE_SLOT,
+                'message': f'big_tree stage pickup: no load joint for slot={BIG_TREE_STAGE_SLOT}',
+            }
+
+        if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label='big_tree stage pickup transit'):
+            self.return_from_slot(BIG_TREE_STAGE_SLOT)
+            return {
+                'success': False,
+                'slot': BIG_TREE_STAGE_SLOT,
+                'message': 'big_tree stage pickup: transit move failed',
+            }
+
+        if not self.move_j_checked(stage_joint, label=f'big_tree stage pickup to slot={BIG_TREE_STAGE_SLOT}'):
+            self.return_from_slot(BIG_TREE_STAGE_SLOT)
+            return {
+                'success': False,
+                'slot': BIG_TREE_STAGE_SLOT,
+                'message': 'big_tree stage pickup: move to slot8 assembly slot failed',
+            }
+
+        if not self.move_l_rel_checked([BIG_TREE_STAGE_PICKUP_X_MM, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                       label='big_tree stage pickup x offset',
+                                       ref_frame=rb.ReferenceFrame.Tool):
+            self.return_from_slot(BIG_TREE_STAGE_SLOT)
+            return {
+                'success': False,
+                'slot': BIG_TREE_STAGE_SLOT,
+                'message': 'big_tree stage pickup: x offset failed',
+            }
+
+        if not self.move_l_rel_checked([0.0, 0.0, BIG_TREE_STAGE_PICKUP_Z_DOWN_MM, 0.0, 0.0, 0.0],
+                                       label='big_tree stage pickup z down',
+                                       ref_frame=rb.ReferenceFrame.Tool):
+            self.return_from_slot(BIG_TREE_STAGE_SLOT)
+            return {
+                'success': False,
+                'slot': BIG_TREE_STAGE_SLOT,
+                'message': 'big_tree stage pickup: z down failed',
+            }
+
+        if not self.call_gripper(True):
+            self.move_l_rel_checked([0.0, 0.0, BIG_TREE_STAGE_PICKUP_Z_UP_MM, 0.0, 0.0, 0.0],
+                                    label='big_tree stage pickup retreat after grip failure',
+                                    ref_frame=rb.ReferenceFrame.Tool)
+            self.move_l_rel_checked([-BIG_TREE_STAGE_PICKUP_X_MM, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                    label='big_tree stage pickup x return after grip failure',
+                                    ref_frame=rb.ReferenceFrame.Tool)
+            self.return_from_slot(BIG_TREE_STAGE_SLOT)
+            return {
+                'success': False,
+                'slot': BIG_TREE_STAGE_SLOT,
+                'message': 'big_tree stage pickup: grip failed',
+            }
+
+        if not self.move_l_rel_checked([0.0, 0.0, BIG_TREE_STAGE_PICKUP_Z_UP_MM, 0.0, 0.0, 0.0],
+                                       label='big_tree stage pickup z up',
+                                       ref_frame=rb.ReferenceFrame.Tool):
+            self.return_from_slot(BIG_TREE_STAGE_SLOT)
+            return {
+                'success': False,
+                'slot': BIG_TREE_STAGE_SLOT,
+                'message': 'big_tree stage pickup: z up failed',
+            }
+
+        if not self.move_l_rel_checked([-BIG_TREE_STAGE_PICKUP_X_MM, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                       label='big_tree stage pickup x return',
+                                       ref_frame=rb.ReferenceFrame.Tool):
+            self.return_from_slot(BIG_TREE_STAGE_SLOT)
+            return {
+                'success': False,
+                'slot': BIG_TREE_STAGE_SLOT,
+                'message': 'big_tree stage pickup: x return failed',
+            }
+
+        for material_id in BIG_TREE_STAGE_GROUP_IDS:
+            res = self.call_cargo('CLEAR', slot=BIG_TREE_STAGE_SLOT, object_id=material_id)
+            if not res or not res.success:
+                self.return_from_slot(BIG_TREE_STAGE_SLOT)
+                return {
+                    'success': False,
+                    'slot': BIG_TREE_STAGE_SLOT,
+                    'message': f'big_tree stage pickup: cargo CLEAR {material_id} failed',
+                }
+
+        return {'success': True, 'slot': BIG_TREE_STAGE_SLOT}
 
     def sequence_assemble(self, product_id):
         if product_id == 46262:
@@ -2529,21 +2887,12 @@ class AmrRobotNode(Node):
         return {'success': True, 'slot': target_slot, 'object_id': product_id, 'message': 'assemble success'}
 
     def sequence_assemble_big_tree(self):
-        """46262 BigTree 전용 조립 시퀀스. 조립슬롯(7/8)을 쓰지 않고, 재료슬롯(2-6)
-        안에서 전부 진행한다. 레시피: 4(베이스) + 6x2 + 2x2 = 5개.
+        """46262 BigTree 전용 조립 시퀀스.
 
-        1. 6이 있는 슬롯(slot_x) 확인
-        2. slot_x에 2가 이미 있는지 확인 -> 없으면 2를 slot_x로 옮김 (LOAD 경로)
-        3. slot_x가 아닌 다른 슬롯의 6을 가져와 slot_x의 layer_index=2 위치에 결합
-           (z오프셋 -19mm, 즉 70-19=51mm 하강), 릴리즈.
-        4. 다른 슬롯의 2를 가져와 slot_x의 layer_index=3 위치에 결합
-           (z오프셋 -38mm, 즉 70-38=32mm 하강), 그리퍼는 놓지 않고 그대로 든다.
-        5. RZ 90도 회전 -> 4가 있는 슬롯(y0)의 layer_index=0 위치로 이동 ->
-           z오프셋 -47mm(70-47=23mm)로 최종 결합, 릴리즈.
-
-        주의: 중간에 slot_x에 재료를 cargo SET하지 않으므로(BigTree 기존 버전과
-        동일하게) 중단 후 재개 판정 대상이 아니다. 최종 완성 위치(y0)는 재료슬롯
-        (2-6) 중 하나이며, 조립슬롯(7/8)은 이 시퀀스에서 아예 쓰지 않는다.
+        slot 7에는 4를 베이스로 놓고,
+        slot 8에는 6(x=-17), 2(x=32), 6(layer1)을 부분조립한 뒤
+        그 6+2+6 묶음을 통째로 들어 slot 7 위로 합친다.
+        마지막 2는 slot 7 상단에 별도로 올린다.
         """
         product_id = 46262
 
@@ -2552,306 +2901,92 @@ class AmrRobotNode(Node):
 
         self.get_logger().info(f'[BIG_TREE START] product_id={product_id}')
 
-        # ── 1. 6이 있는 슬롯(slot_x) 확인 ────────────────────────────────────
-        res = self.call_cargo('FIND_OBJECT', object_id=6)
+        for slot in (BIG_TREE_BASE_SLOT, BIG_TREE_STAGE_SLOT):
+            res = self.call_cargo('FIND_SLOT_STACK', slot=slot)
+            if not res or not res.success:
+                return {
+                    'success': False, 'slot': slot, 'object_id': product_id,
+                    'message': f'big_tree: FIND_SLOT_STACK failed for slot={slot}',
+                }
+            if list(res.stack):
+                return {
+                    'success': False, 'slot': slot, 'object_id': product_id,
+                    'message': f'big_tree: slot={slot} is not empty',
+                }
+
+        placements = [
+            {'material_id': 4, 'target_slot': BIG_TREE_BASE_SLOT, 'x_offset': BIG_TREE_BASE_X_MM,
+             'z_down_mm': ASSEMBLY_Z_DOWN_MM, 'cargo_set_ids': (4,), 'exclude_slot': None,
+             'label': 'big_tree base 4'},
+            {'material_id': 6, 'target_slot': BIG_TREE_STAGE_SLOT, 'x_offset': BIG_TREE_STAGE_LEFT_X_MM,
+             'z_down_mm': ASSEMBLY_Z_DOWN_MM, 'cargo_set_ids': (6,), 'exclude_slot': None,
+             'label': 'big_tree stage 6 left'},
+            {'material_id': 2, 'target_slot': BIG_TREE_STAGE_SLOT, 'x_offset': BIG_TREE_STAGE_RIGHT_X_MM,
+             'z_down_mm': ASSEMBLY_Z_DOWN_MM, 'cargo_set_ids': (2,), 'exclude_slot': None,
+             'label': 'big_tree stage 2 right'},
+            {'material_id': 6, 'target_slot': BIG_TREE_STAGE_SLOT, 'x_offset': BIG_TREE_STAGE_MID_X_MM,
+             'z_down_mm': ASSEMBLY_Z_DOWN_MM - BLOCK_H_MM * BIG_TREE_STAGE_LAYER_TOP,
+             'cargo_set_ids': (6,), 'exclude_slot': BIG_TREE_STAGE_SLOT, 'label': 'big_tree stage 6 top'},
+        ]
+
+        for idx, step in enumerate(placements):
+            pick_res = self.pick_material_for_assembly(
+                step['material_id'], step['label'], exclude_slot=step['exclude_slot'],
+                direct=(idx != 0),  # 시퀀스의 맨 첫 픽업(베이스 4)만 전체 웨이포인트로 안전하게 진입
+            )
+            if not pick_res['success']:
+                return {'success': False, 'slot': pick_res.get('slot', -1),
+                        'object_id': product_id, 'message': pick_res['message']}
+
+            place_res = self.place_gripped_to_assembly_slot(
+                step['target_slot'], step['z_down_mm'], step['label'],
+                x_offset=step['x_offset'], cargo_set_ids=step['cargo_set_ids'],
+            )
+            if not place_res['success']:
+                return {'success': False, 'slot': place_res.get('slot', -1),
+                        'object_id': product_id, 'message': place_res['message']}
+
+        pickup_res = self.pickup_big_tree_stage_group_from_slot8()
+        if not pickup_res['success']:
+            return {'success': False, 'slot': pickup_res.get('slot', -1),
+                    'object_id': product_id, 'message': pickup_res['message']}
+
+        merge_res = self.place_gripped_to_assembly_slot(
+            BIG_TREE_BASE_SLOT, BIG_TREE_STAGE_MERGE_Z_DOWN_MM, 'big_tree merge stage onto base',
+            x_offset=BIG_TREE_MERGE_PLACE_X_MM, cargo_set_ids=BIG_TREE_STAGE_GROUP_IDS,
+        )
+        if not merge_res['success']:
+            return {'success': False, 'slot': merge_res.get('slot', -1),
+                    'object_id': product_id, 'message': merge_res['message']}
+
+        top2_pick_res = self.pick_material_for_assembly(2, 'big_tree top 2', exclude_slot=BIG_TREE_BASE_SLOT)
+        if not top2_pick_res['success']:
+            return {'success': False, 'slot': top2_pick_res.get('slot', -1),
+                    'object_id': product_id, 'message': top2_pick_res['message']}
+
+        top2_place_res = self.place_gripped_to_assembly_slot(
+            BIG_TREE_BASE_SLOT, BIG_TREE_TOP_2_Z_DOWN_MM, 'big_tree top 2 place',
+            x_offset=BIG_TREE_TOP_2_X_MM, cargo_set_ids=(2,),
+        )
+        if not top2_place_res['success']:
+            return {'success': False, 'slot': top2_place_res.get('slot', -1),
+                    'object_id': product_id, 'message': top2_place_res['message']}
+
+        for material_id in BIG_TREE_FINAL_STACK_IDS:
+            res = self.call_cargo('CLEAR', slot=BIG_TREE_BASE_SLOT, object_id=material_id)
+            if not res or not res.success:
+                self.return_from_slot(BIG_TREE_BASE_SLOT)
+                return {'success': False, 'slot': BIG_TREE_BASE_SLOT, 'object_id': product_id,
+                        'message': f'big_tree: cargo CLEAR {material_id} failed during finalization'}
+
+        res = self.call_cargo('SET', slot=BIG_TREE_BASE_SLOT, object_id=product_id)
         if not res or not res.success:
-            self.get_logger().error('[BIG_TREE] slot_x: 6 not found')
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'slot_x: 6 not found'}
-        slot_x = res.slot
+            self.return_from_slot(BIG_TREE_BASE_SLOT)
+            return {'success': False, 'slot': BIG_TREE_BASE_SLOT, 'object_id': product_id,
+                    'message': 'big_tree: cargo SET failed during finalization'}
 
-        # ── 2. slot_x에 2가 이미 있는지 확인, 없으면 옮기기 (LOAD 경로) ──────
-        res = self.call_cargo('FIND_SLOT_STACK', slot=slot_x)
-        if not res or not res.success:
-            self.get_logger().error(f'[BIG_TREE] slot_x={slot_x}: FIND_SLOT_STACK failed')
-            return {'success': False, 'slot': -1, 'object_id': product_id,
-                    'message': f'slot_x={slot_x}: FIND_SLOT_STACK failed'}
-
-        if 2 not in list(res.stack):
-            res2 = self.call_cargo('FIND_OBJECT', object_id=2)
-            if not res2 or not res2.success:
-                self.get_logger().error('[BIG_TREE] slot_x: 2 not found')
-                return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'slot_x: 2 not found'}
-            slot_2a, layer_2a = res2.slot, res2.layer_index
-
-            if not self.call_gripper(False):
-                return {'success': False, 'slot': -1, 'object_id': product_id,
-                        'message': 'slot_x: gripper open failed (2)'}
-
-            slot_joint_2a = UNLOAD_SLOT_JOINTS.get(slot_2a * 10 + layer_2a)
-            if slot_joint_2a is None:
-                self.get_logger().error(f'[BIG_TREE] slot_x: no unload joint for slot={slot_2a} layer={layer_2a}')
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id,
-                        'message': f'slot_x: no unload joint for slot={slot_2a} layer={layer_2a}'}
-
-            if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label='slot_x 2 pickup transit'):
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id,
-                        'message': 'slot_x: move to source of 2 failed'}
-
-            if not self.move_j_checked(slot_joint_2a, label=f'slot_x 2 to slot={slot_2a}'):
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id,
-                        'message': 'slot_x: move to source of 2 failed'}
-
-            if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_DOWN_MM, 0.0, 0.0, 0.0], label='slot_x 2 z down'):
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'slot_x: 2 z down failed'}
-
-            if not self.call_gripper(True):
-                self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0], label='slot_x 2 retreat')
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'slot_x: 2 grip failed'}
-
-            if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0], label='slot_x 2 z up'):
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'slot_x: 2 z up failed'}
-
-            res2 = self.call_cargo('CLEAR', slot=slot_2a, object_id=2)
-            if not res2 or not res2.success:
-                self.go_home()
-                return {'success': False, 'slot': slot_2a, 'object_id': product_id,
-                        'message': 'slot_x: cargo CLEAR 2 failed'}
-
-            if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label='slot_x place transit'):
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id,
-                        'message': 'slot_x: move to slot_x load pos failed'}
-
-            if not self.move_j_checked(LOAD_SLOT_JOINTS[slot_x], label=f'slot_x to slot={slot_x}'):
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id,
-                        'message': 'slot_x: move to slot_x load pos failed'}
-
-            if not self.move_l_rel_checked([0.0, 0.0, LOAD_Z_DOWN_MM, 0.0, 0.0, 0.0], label='slot_x 2 place z down'):
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id,
-                        'message': 'slot_x: 2 place z down failed'}
-
-            if not self.call_gripper(False):
-                self.move_l_rel_checked([0.0, 0.0, -LOAD_Z_DOWN_MM, 0.0, 0.0, 0.0], label='slot_x 2 place retreat')
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'slot_x: 2 release failed'}
-
-            if not self.move_l_rel_checked([0.0, 0.0, -LOAD_Z_DOWN_MM, 0.0, 0.0, 0.0], label='slot_x 2 place z up'):
-                self.go_home()
-                return {'success': False, 'slot': -1, 'object_id': product_id,
-                        'message': 'slot_x: 2 place z up failed'}
-        else:
-            self.get_logger().info(f'[BIG_TREE] slot_x={slot_x} already has 6+2, skip moving 2')
-
-        # ── 3. 다른 슬롯의 6을 가져와 slot_x의 layer_index=2 위치에 결합 (릴리즈) ──
-        res = self.call_cargo('FIND_OBJECT_EXCLUDING', object_id=6, slot=slot_x)
-        if not res or not res.success:
-            self.get_logger().error('[BIG_TREE] step2: other 6 not found')
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: other 6 not found'}
-        slot_6b, layer_6b = res.slot, res.layer_index
-
-        if not self.call_gripper(False):
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: gripper open failed (6)'}
-
-        slot_joint_6b = UNLOAD_SLOT_JOINTS.get(slot_6b * 10 + layer_6b)
-        if slot_joint_6b is None:
-            self.get_logger().error(f'[BIG_TREE] step2: no unload joint for slot={slot_6b} layer={layer_6b}')
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id,
-                    'message': f'step2: no unload joint for slot={slot_6b} layer={layer_6b}'}
-
-        if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label='step2 6 pickup transit'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: move to 6 source failed'}
-
-        if not self.move_j_checked(slot_joint_6b, label=f'step2 6 to slot={slot_6b}'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: move to 6 source failed'}
-
-        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_DOWN_MM, 0.0, 0.0, 0.0], label='step2 6 z down'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: 6 z down failed'}
-
-        if not self.call_gripper(True):
-            self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0], label='step2 6 retreat')
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: 6 grip failed'}
-
-        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0], label='step2 6 z up'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: 6 z up failed'}
-
-        res = self.call_cargo('CLEAR', slot=slot_6b, object_id=6)
-        if not res or not res.success:
-            self.go_home()
-            return {'success': False, 'slot': slot_6b, 'object_id': product_id, 'message': 'step2: cargo CLEAR 6 failed'}
-
-        combine_joint_2 = UNLOAD_SLOT_JOINTS.get(slot_x * 10 + 2)
-        if combine_joint_2 is None:
-            self.get_logger().error(f'[BIG_TREE] step2: no joint for slot_x={slot_x} layer=2')
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id,
-                    'message': f'step2: no joint for slot_x={slot_x} layer=2'}
-
-        if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label='step2 combine transit'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: move to combine joint failed'}
-
-        if not self.move_j_checked(combine_joint_2, label='step2 to slot_x combine joint (layer2)'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: move to combine joint failed'}
-
-        z2 = ASSEMBLY_Z_DOWN_MM - BIG_TREE_STEP2_Z_OFFSET_MM
-        if not self.move_l_rel_checked([0.0, 0.0, z2, 0.0, 0.0, 0.0],
-                                        label='step2 combine z down', ref_frame=rb.ReferenceFrame.Tool):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: combine z down failed'}
-
-        if not self.call_gripper(False):
-            self.get_logger().error('[BIG_TREE] step2: release failed')
-            self.move_l_rel_checked([0.0, 0.0, -z2, 0.0, 0.0, 0.0],
-                                     label='step2 combine retreat', ref_frame=rb.ReferenceFrame.Tool)
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: release failed'}
-
-        if not self.move_l_rel_checked([0.0, 0.0, -z2, 0.0, 0.0, 0.0],
-                                        label='step2 combine z up', ref_frame=rb.ReferenceFrame.Tool):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step2: combine z up failed'}
-
-        # ── 4. 다른 슬롯의 2를 가져와 slot_x의 layer_index=3 위치에 결합 (그리퍼 유지) ──
-        res = self.call_cargo('FIND_OBJECT', object_id=2)
-        if not res or not res.success:
-            self.get_logger().error('[BIG_TREE] step3: other 2 not found')
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: other 2 not found'}
-        slot_2c, layer_2c = res.slot, res.layer_index
-
-        if not self.call_gripper(False):
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: gripper open failed (2)'}
-
-        slot_joint_2c = UNLOAD_SLOT_JOINTS.get(slot_2c * 10 + layer_2c)
-        if slot_joint_2c is None:
-            self.get_logger().error(f'[BIG_TREE] step3: no unload joint for slot={slot_2c} layer={layer_2c}')
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id,
-                    'message': f'step3: no unload joint for slot={slot_2c} layer={layer_2c}'}
-
-        if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label='step3 2 pickup transit'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: move to 2 source failed'}
-
-        if not self.move_j_checked(slot_joint_2c, label=f'step3 2 to slot={slot_2c}'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: move to 2 source failed'}
-
-        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_DOWN_MM, 0.0, 0.0, 0.0], label='step3 2 z down'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: 2 z down failed'}
-
-        if not self.call_gripper(True):
-            self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0], label='step3 2 retreat')
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: 2 grip failed'}
-
-        if not self.move_l_rel_checked([0.0, 0.0, UNLOAD_Z_UP_MM, 0.0, 0.0, 0.0], label='step3 2 z up'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: 2 z up failed'}
-
-        res = self.call_cargo('CLEAR', slot=slot_2c, object_id=2)
-        if not res or not res.success:
-            self.go_home()
-            return {'success': False, 'slot': slot_2c, 'object_id': product_id, 'message': 'step3: cargo CLEAR 2 failed'}
-
-        combine_joint_3 = UNLOAD_SLOT_JOINTS.get(slot_x * 10 + 3)
-        if combine_joint_3 is None:
-            self.get_logger().error(f'[BIG_TREE] step3: no joint for slot_x={slot_x} layer=3')
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id,
-                    'message': f'step3: no joint for slot_x={slot_x} layer=3'}
-
-        if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label='step3 combine transit'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: move to combine joint failed'}
-
-        if not self.move_j_checked(combine_joint_3, label='step3 to slot_x combine joint (layer3)'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: move to combine joint failed'}
-
-        z3 = ASSEMBLY_Z_DOWN_MM - BIG_TREE_STEP3_Z_OFFSET_MM
-        if not self.move_l_rel_checked([0.0, 0.0, z3, 0.0, 0.0, 0.0],
-                                        label='step3 combine z down', ref_frame=rb.ReferenceFrame.Tool):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: combine z down failed'}
-
-        # 그리퍼는 놓지 않는다 (slot_x의 6+2+6+2 전체를 통째로 든다).
-        # slot_x에 처음부터 남아있던 6은 cargo에 한 번도 갱신 안 했으므로 여기서 지운다.
-        res = self.call_cargo('CLEAR', slot=slot_x, object_id=6)
-        if not res or not res.success:
-            self.go_home()
-            return {'success': False, 'slot': slot_x, 'object_id': product_id,
-                    'message': 'step3: cargo CLEAR slot_x original 6 failed'}
-
-        if not self.move_l_rel_checked([0.0, 0.0, -z3, 0.0, 0.0, 0.0],
-                                        label='step3 stack lift', ref_frame=rb.ReferenceFrame.Tool):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'step3: stack lift failed'}
-
-        # ── 5. RZ 90도 회전 -> 4가 있는 슬롯(y0)의 layer_index=0 위치에 최종 결합 ──
-        if not self.move_l_rel_checked([0.0, 0.0, 0.0, 0.0, 0.0, 90.0], label='final rz 90'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'final: rz rotation failed'}
-
-        res = self.call_cargo('FIND_OBJECT', object_id=4)
-        if not res or not res.success:
-            self.get_logger().error('[BIG_TREE] final: 4 not found')
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'final: 4 not found'}
-        slot_y0 = res.slot
-
-        final_joint = UNLOAD_SLOT_JOINTS.get(slot_y0 * 10 + 0)
-        if final_joint is None:
-            self.get_logger().error(f'[BIG_TREE] final: no joint for slot_y0={slot_y0} layer=0')
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id,
-                    'message': f'final: no joint for slot_y0={slot_y0} layer=0'}
-
-        if not self.move_j_checked(ASSEMBLY_TRANSIT_JOINT_DEG, label='final combine transit'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'final: move to combine joint failed'}
-
-        if not self.move_j_checked(final_joint, label='final to slot_y0 combine joint (layer0)'):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'final: move to combine joint failed'}
-
-        z_final = ASSEMBLY_Z_DOWN_MM - BIG_TREE_FINAL_Z_OFFSET_MM
-        if not self.move_l_rel_checked([0.0, 0.0, z_final, 0.0, 0.0, 0.0],
-                                        label='final combine z down', ref_frame=rb.ReferenceFrame.Tool):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'final: combine z down failed'}
-
-        if not self.call_gripper(False):
-            self.get_logger().error('[BIG_TREE] final: release failed')
-            self.move_l_rel_checked([0.0, 0.0, -z_final, 0.0, 0.0, 0.0],
-                                     label='final retreat', ref_frame=rb.ReferenceFrame.Tool)
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'final: release failed'}
-
-        if not self.move_l_rel_checked([0.0, 0.0, -z_final, 0.0, 0.0, 0.0],
-                                        label='final z up', ref_frame=rb.ReferenceFrame.Tool):
-            self.go_home()
-            return {'success': False, 'slot': -1, 'object_id': product_id, 'message': 'final: z up failed'}
-
-        # ── cargo 등록: y0의 4를 지우고 완성품(46262)으로 등록 ──────────────────
-        res = self.call_cargo('CLEAR', slot=slot_y0, object_id=4)
-        if not res or not res.success:
-            self.get_logger().error('[BIG_TREE] cargo CLEAR (y0 base 4) failed')
-            return {'success': False, 'slot': slot_y0, 'object_id': product_id,
-                    'message': 'assembled but cargo CLEAR of base 4 failed'}
-
-        res = self.call_cargo('SET', slot=slot_y0, object_id=product_id)
-        if not res or not res.success:
-            self.get_logger().error('[BIG_TREE] cargo SET failed')
-            return {'success': False, 'slot': slot_y0, 'object_id': product_id,
-                    'message': 'assembled but cargo SET failed'}
-
-        self.get_logger().info(f'[ASSEMBLE DONE] big_tree product_id={product_id}, slot={slot_y0}')
-        return {'success': True, 'slot': slot_y0, 'object_id': product_id, 'message': 'assemble success'}
+        self.get_logger().info(f'[ASSEMBLE DONE] big_tree product_id={product_id}, slot={BIG_TREE_BASE_SLOT}')
+        return {'success': True, 'slot': BIG_TREE_BASE_SLOT, 'object_id': product_id, 'message': 'assemble success'}
 
 
 def main(args=None):

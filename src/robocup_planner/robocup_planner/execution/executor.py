@@ -268,9 +268,13 @@ class Executor:
         # close-quarters, bad-heading replan that Nav2 can't reliably recover
         # from; routing back through the sub_goal restores the same clean
         # open-space approach every other re-dock in this loop gets for free.
+        # It also happens to be exactly where we want to park anyway: there's
+        # no next pickup to drive off to for this last product, so the AMR
+        # would otherwise sit docked at the goal for the whole disassembly
+        # wait — parking at the sub_goal instead keeps a safe distance from
+        # the workbench for that wait.
         if pending_wb_handle is not None:
-            self._approach(workbench_id)
-            self._collect_recycled_materials(
+            self._wait_at_subgoal_for_recycle(
                 pending_wb_handle, pending_wb_pid, workbench_id
             )
 
@@ -278,10 +282,38 @@ class Executor:
         self, handle, pid: int, workbench_id: int
     ) -> None:
         """Wait for a RECYCLE WbTask to finish, then pick up every material
-        block it produced from the workbench shelf."""
+        block it produced from the workbench shelf.
+
+        Assumes the AMR is already docked at the workbench goal — used right
+        before placing the *next* product on the shelf, where docking is
+        unavoidable anyway (see the loop in _run_recycle_phase), so there's
+        no safe-distance benefit to retreating first.
+        """
         if not self._node.wait_for_wb_task(handle):
             raise ExecutionFailure(f"RECYCLE failed: product={pid}")
+        self._pick_recycled_materials(pid, workbench_id)
 
+    def _wait_at_subgoal_for_recycle(
+        self, handle, pid: int, workbench_id: int
+    ) -> None:
+        """Wait for a RECYCLE WbTask to finish while parked at the sub_goal
+        (open-space) position — keeps a safe distance from the workbench for
+        the whole disassembly instead of idling docked at the goal — then
+        dock at the goal to collect the disassembled materials.
+        """
+        self._require(
+            self._node.navigate_subgoal(workbench_id), f"navigate_subgoal({workbench_id})"
+        )
+        if not self._node.wait_for_wb_task(handle):
+            raise ExecutionFailure(f"RECYCLE failed: product={pid}")
+        self._require(
+            self._node.navigate_goal(workbench_id), f"navigate_goal({workbench_id})"
+        )
+        self._pick_recycled_materials(pid, workbench_id)
+
+    def _pick_recycled_materials(self, pid: int, workbench_id: int) -> None:
+        """Pick up every material block a finished RECYCLE produced from the
+        workbench shelf. Caller must already be docked at the workbench goal."""
         for mat_id, cnt in get_material_count(pid).items():
             for _ in range(cnt):
                 self._log(f"    ← pick recycled mat {mat_id} from workbench")
@@ -595,7 +627,10 @@ class Executor:
                 f"arm_unload_product_to_workbench(product={pid}, station={workbench_id})",
             )
             handle = self._node.wb_task_async('RECYCLE', pid)
-            self._collect_recycled_materials(handle, pid, workbench_id)
+            # Nothing else to fetch while this disassembles (deferred recycle
+            # runs one product at a time) — retreat to the sub_goal to wait
+            # instead of idling docked at the goal, same as the Phase 1 tail case.
+            self._wait_at_subgoal_for_recycle(handle, pid, workbench_id)
             self._soft(self._node.call_post_process(), "call_post_process (deferred recycle)")
 
             self._return_materials_to_storage(dict(get_material_count(pid)))

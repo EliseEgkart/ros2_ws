@@ -277,6 +277,13 @@ class Executor:
             self._wait_at_subgoal_for_recycle(
                 pending_wb_handle, pending_wb_pid, workbench_id
             )
+            # Every other docking action in this file backs away via
+            # call_post_process() before the next navigate call — this is
+            # the only exit from a workbench dock that didn't, which left
+            # the AMR flush against the workbench with no clean pose for
+            # Nav2 to plan a departure from (it would spin in place trying
+            # to resolve the ~180° heading flip instead of backing out).
+            self._soft(self._node.call_post_process(), "call_post_process (workbench tail)")
 
     def _collect_recycled_materials(
         self, handle, pid: int, workbench_id: int

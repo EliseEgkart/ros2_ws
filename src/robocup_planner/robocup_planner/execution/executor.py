@@ -45,10 +45,13 @@ In-transit assembly rule (Mod 2):
   immediately in case the new product's materials are already loaded.
 
 Two-phase navigation rule:
-  Every station approach is split into two legs:
+  Every station approach is split into two legs, always via _approach(id):
     1. navigate_subgoal(id)  — fast cruise; arm may ASSEMBLE during this leg.
        At sub_goal: wait_for_intransit_assembly() blocks until arm is idle.
     2. navigate_goal(id)     — precision parking; arm must be idle.
+  Never call navigate_subgoal()/navigate_goal() directly — always go
+  through _approach() so this rule can't be silently skipped at a new
+  call site (see _approach() docstring for why that happened before).
 
 Fail-loud / self-recovery rule:
   Every navigate/arm/wb call the Executor makes is checked against its
@@ -209,9 +212,7 @@ class Executor:
             pid = entry['recycle_product_id']
 
             self._log(f"  → navigate to customer station {station_id}")
-            self._require(self._node.navigate_subgoal(station_id), f"navigate_subgoal({station_id})")
-            self._wait_for_intransit_assembly()
-            self._require(self._node.navigate_goal(station_id), f"navigate_goal({station_id})")
+            self._approach(station_id)
             self._require(
                 self._node.arm_pick_product(station_id=station_id, product_id=pid),
                 f"arm_pick_product(station={station_id}, product={pid})",
@@ -219,7 +220,7 @@ class Executor:
             self._soft(self._node.call_post_process(), "call_post_process (customer)")
 
             self._log(f"  → navigate to workbench {workbench_id} for RECYCLE")
-            self._require(self._node.navigate_goal(workbench_id), f"navigate_goal({workbench_id})")
+            self._approach(workbench_id)
 
             # Clear out the previous product's disassembled materials first so
             # the workbench shelf is free before we place the next product on it.
@@ -259,12 +260,16 @@ class Executor:
         # The post_process call right after starting that disassembly (above)
         # backs the AMR away from the workbench and rotates it for the exit
         # maneuver, so — unlike the collect call inside the loop, which always
-        # runs right after a fresh navigate_goal(workbench_id) re-dock for the
-        # *next* product — this tail call needs its own re-dock first. Without
-        # it the arm tries to pick materials from an AMR that's still facing
-        # away from the workbench post-post_process.
+        # re-docks from a distant approach (customer → workbench) that Nav2
+        # handles as a normal open-space path — this tail call needs its own
+        # re-dock, and specifically needs to go back out to the sub_goal
+        # waypoint first. Re-docking straight from the post_process pose
+        # (backed up and rotated ~150°, right against the workbench) is a
+        # close-quarters, bad-heading replan that Nav2 can't reliably recover
+        # from; routing back through the sub_goal restores the same clean
+        # open-space approach every other re-dock in this loop gets for free.
         if pending_wb_handle is not None:
-            self._require(self._node.navigate_goal(workbench_id), f"navigate_goal({workbench_id})")
+            self._approach(workbench_id)
             self._collect_recycled_materials(
                 pending_wb_handle, pending_wb_pid, workbench_id
             )
@@ -319,9 +324,7 @@ class Executor:
 
         for station_id, mat_ids in by_station.items():
             self._log(f"  → navigate to storage {station_id} to return {mat_ids}")
-            self._require(self._node.navigate_subgoal(station_id), f"navigate_subgoal({station_id})")
-            self._wait_for_intransit_assembly()
-            self._require(self._node.navigate_goal(station_id), f"navigate_goal({station_id})")
+            self._approach(station_id)
             for mat_id in mat_ids:
                 self._require(
                     self._node.arm_return_material_to_storage(
@@ -355,9 +358,7 @@ class Executor:
 
         wid = self._plan.workbench_station_id
         self._log(f"Reclaiming materials buffered at workbench: {dict(pending)}")
-        self._require(self._node.navigate_subgoal(wid), f"navigate_subgoal({wid})")
-        self._wait_for_intransit_assembly()
-        self._require(self._node.navigate_goal(wid), f"navigate_goal({wid})")
+        self._approach(wid)
 
         for mat_id, cnt in list(pending.items()):
             for _ in range(cnt):
@@ -394,9 +395,7 @@ class Executor:
                 f"[{idx}/{len(storage_entries)-1}] navigate to storage station {sid}"
             )
 
-            self._require(self._node.navigate_subgoal(sid), f"navigate_subgoal({sid})")
-            self._wait_for_intransit_assembly()
-            self._require(self._node.navigate_goal(sid), f"navigate_goal({sid})")
+            self._approach(sid)
 
             needs_revisit = False
             for mat_id in entry.get('pickup_materials', []):
@@ -408,9 +407,7 @@ class Executor:
                     needs_revisit = True
 
                 if needs_revisit:
-                    self._require(self._node.navigate_subgoal(sid), f"navigate_subgoal({sid})")
-                    self._wait_for_intransit_assembly()
-                    self._require(self._node.navigate_goal(sid), f"navigate_goal({sid})")
+                    self._approach(sid)
                     needs_revisit = False
 
                 self._log(f"  → pick mat {mat_id}")
@@ -428,6 +425,21 @@ class Executor:
     # ------------------------------------------------------------------
     # In-transit assembly
     # ------------------------------------------------------------------
+
+    def _approach(self, station_id: int) -> None:
+        """Approach station_id following the two-phase navigation rule.
+
+        Always route through the sub_goal (open-space) leg before the
+        precision-parking goal leg, and drain any in-transit ASSEMBLE so the
+        arm is guaranteed idle before docking. This is the only sanctioned
+        way to reach a station's docking goal — calling navigate_goal()
+        directly skips the transit window for in-transit assembly and risks
+        a close-quarters, bad-heading redock (e.g. from a post_process exit
+        pose), which is how the recycle-phase AMR mispositioning bug arose.
+        """
+        self._require(self._node.navigate_subgoal(station_id), f"navigate_subgoal({station_id})")
+        self._wait_for_intransit_assembly()
+        self._require(self._node.navigate_goal(station_id), f"navigate_goal({station_id})")
 
     def _start_ready_intransit_assembly(self) -> bool:
         """Start ASSEMBLE for the first in-slot product whose materials are all loaded.
@@ -497,9 +509,7 @@ class Executor:
 
         wid = self._plan.workbench_station_id
         self._log(f"  → overflow drop: navigate to workbench {wid}")
-        self._require(self._node.navigate_subgoal(wid), f"navigate_subgoal({wid})")
-        self._wait_for_intransit_assembly()
-        self._require(self._node.navigate_goal(wid), f"navigate_goal({wid})")
+        self._approach(wid)
         self._wb_buffer += self._node.arm_unload_all_materials()
         self._soft(self._node.call_post_process(), "call_post_process (overflow)")
 
@@ -519,9 +529,7 @@ class Executor:
 
         cid = self._plan.customer_station_id
         self._log(f"  → navigate to customer {cid}")
-        self._require(self._node.navigate_subgoal(cid), f"navigate_subgoal({cid})")
-        self._wait_for_intransit_assembly()
-        self._require(self._node.navigate_goal(cid), f"navigate_goal({cid})")
+        self._approach(cid)
 
         # Deliver each completed in-transit slot directly from cargo 7/8.
         for slot in list(self._allocator.get_completed_slots()):
@@ -571,9 +579,7 @@ class Executor:
 
         for pid in deferred_ids:
             self._log(f"  → navigate to customer station {customer_id} to reclaim product {pid}")
-            self._require(self._node.navigate_subgoal(customer_id), f"navigate_subgoal({customer_id})")
-            self._wait_for_intransit_assembly()
-            self._require(self._node.navigate_goal(customer_id), f"navigate_goal({customer_id})")
+            self._approach(customer_id)
             self._require(
                 self._node.arm_pick_product(station_id=customer_id, product_id=pid),
                 f"arm_pick_product(station={customer_id}, product={pid})",
@@ -581,7 +587,7 @@ class Executor:
             self._soft(self._node.call_post_process(), "call_post_process (deferred pickup)")
 
             self._log(f"  → navigate to workbench {workbench_id} for RECYCLE")
-            self._require(self._node.navigate_goal(workbench_id), f"navigate_goal({workbench_id})")
+            self._approach(workbench_id)
             self._require(
                 self._node.arm_unload_product_to_workbench(
                     product_id=pid, station_id=workbench_id,
@@ -602,9 +608,7 @@ class Executor:
         """Navigate back to the home station (0 for A-side, 14 for B-side)."""
         home_id = self._plan.home_station_id
         self._log(f"Returning to home station {home_id}")
-        self._require(self._node.navigate_subgoal(home_id), f"navigate_subgoal({home_id})")
-        self._wait_for_intransit_assembly()
-        self._require(self._node.navigate_goal(home_id), f"navigate_goal({home_id})")
+        self._approach(home_id)
         self._log(f"Arrived at home station {home_id} — mission complete")
         current = self._node.get_current_station_id()
         if current is not None and current != home_id:

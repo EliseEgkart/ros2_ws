@@ -172,16 +172,20 @@ def prompt_customer_initial_ids(recycle_ids: Sequence[int]) -> List[int]:
 
 def prompt_station_materials(side: str) -> Dict[int, List[int]]:
     layout = SIDE_LAYOUT[side]
-    storage_ids = tuple(layout["storage_ids"])
+    # Hybrid stations are read by the planner exactly like storage stations
+    # when building the initial aidlist (planner_node.py checks
+    # station_type in (ST_STORAGE, ST_HYBRID)), so they take the same
+    # material_ids input here.
+    station_ids = tuple(layout["storage_ids"]) + tuple(layout["hybrid_ids"])
     out: Dict[int, List[int]] = {}
 
     print("")
     print(color("[Station Material Input]", MAGENTA + BOLD))
-    print("현재 환경에서는 storage/shared storage station에만 초기 material_ids를 둡니다.")
+    print("storage/shared storage/hybrid station에 초기 material_ids를 둘 수 있습니다.")
     print("개별 재료는 1~8, known batch는 10/20/.../80, mix batch는 90입니다.")
     print("비워두면 해당 station material_ids=[] 입니다.")
 
-    for station_id in storage_ids:
+    for station_id in station_ids:
         while True:
             raw = input(f"  S{station_id:02d} material_ids: ").strip()
             try:
@@ -265,7 +269,7 @@ def build_task(
                 Station.ST_HYBRID,
                 station_name(side, Station.ST_HYBRID, station_id, idx),
                 station_id,
-                [],
+                material_by_station.get(station_id, []),
             )
         )
 

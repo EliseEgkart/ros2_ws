@@ -61,6 +61,7 @@ from robocup_planner.planning.midlist_builder import (
     build_storage_midlist,
     check_storage_satisfies,
     merge_into_midlist,
+    compute_completion_indices,
 )
 from robocup_planner.execution.cargo_state import CargoManager
 from robocup_planner.execution.executor import Executor, Plan
@@ -634,6 +635,26 @@ class PlannerNode(Node):
             if extra > 0:
                 surplus[mat] = extra
 
+        # Cargo-overflow avoidance: rank produce orders by how early their full
+        # material set appears along the distance-sorted pickup route (`mid`),
+        # not just by num_blocks/weight. Assigning cargo 7/8 to whichever
+        # products complete soonest means those slots free up (and get
+        # delivered) faster, so materials for queued products don't have to
+        # sit unconsumed in cargo 2-6 for the whole route — which is what
+        # was driving overflow drops at the workbench. Products with no
+        # feasible completion in `mid` (e.g. produced entirely from recycled
+        # stock) get completion_index == len(materials), i.e. lowest priority
+        # from this factor alone.
+        completion_index = compute_completion_indices(mid, intransit_ids)
+        effective_weights = dict(self._product_weights)
+        for pid in intransit_ids:
+            base = effective_weights.get(pid, 1.0)
+            effective_weights[pid] = base / (1.0 + completion_index.get(pid, 0))
+        self.get_logger().info(
+            f"In-transit completion-order priority (route step index): "
+            f"{completion_index}"
+        )
+
         # Lifecycle scheduling: a produce order that's also a deferred-recycle
         # order (Step 1a) can only start being recycled *after* it's been
         # assembled and delivered — so it should clear the cargo 7/8 queue as
@@ -641,7 +662,6 @@ class PlannerNode(Node):
         # like every other order. Boost its effective weight for
         # CargoAllocator.allocate() only; self._product_weights (the
         # user-supplied param) is left untouched for logging/debugging clarity.
-        effective_weights = dict(self._product_weights)
         deferred_recycle_produce_ids = sorted(set(produce_ids) & set(recycle_deferred_ids))
         if deferred_recycle_produce_ids:
             for pid in deferred_recycle_produce_ids:
@@ -799,12 +819,23 @@ class PlannerNode(Node):
 
         Bounded by nav_timeout_sec; retries up to call_max_retries times on
         timeout or rejection before giving up and returning False.
+
+        The navigator only ever runs one NavTask goal at a time and rejects
+        any goal sent while busy (see navigator_nav2.py's _goal_callback). If
+        a wait here times out, the original goal is usually still executing
+        rather than actually dead — simply sending a new goal would get
+        rejected as "busy" and every subsequent attempt (including a later
+        best-effort return-to-home) would fail the same way even though the
+        original goal eventually succeeds on its own. So on timeout we
+        explicitly cancel the timed-out goal and give it nav_cancel_grace_sec
+        to actually stop and clear the navigator's busy flag before retrying.
         """
         self._nav_client.wait_for_server()
 
         for attempt in range(1, self._call_max_retries + 2):
             done = threading.Event()
             success_holder = [False]
+            goal_handle_holder = [None]
 
             def _result_cb(future):
                 result = future.result()
@@ -817,6 +848,7 @@ class PlannerNode(Node):
                     self.get_logger().error(f"NavTask goal rejected for station {station_id}")
                     done.set()
                     return
+                goal_handle_holder[0] = gh
                 gh.get_result_async().add_done_callback(_result_cb)
 
             goal = NavTask.Goal()
@@ -830,6 +862,16 @@ class PlannerNode(Node):
             if completed and success_holder[0]:
                 self._last_navigated_station = abs(station_id)
                 return True
+
+            if not completed and goal_handle_holder[0] is not None:
+                goal_handle_holder[0].cancel_goal_async()
+                if self._bounded_wait(
+                    done, self._nav_cancel_grace_sec,
+                    f"navigate(station={station_id}) cancel after timeout",
+                ) and success_holder[0]:
+                    # Goal actually succeeded before the cancel took effect.
+                    self._last_navigated_station = abs(station_id)
+                    return True
 
             if attempt <= self._call_max_retries:
                 self.get_logger().warning(

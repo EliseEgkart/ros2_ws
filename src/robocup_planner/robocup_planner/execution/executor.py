@@ -43,6 +43,17 @@ In-transit assembly rule (Mod 2):
   When a slot is freed after delivery, CargoAllocator auto-assigns the next
   queued product to that slot; _start_ready_intransit_assembly() is called
   immediately in case the new product's materials are already loaded.
+  _run_pickup_phase() checks for a completed slot after every single material
+  pick (not just once per station) and delivers immediately when one is
+  ready: a completed-but-undelivered slot can't take the next queued
+  product, so every pick made while it sits idle is one more block stranded
+  in cargo 2-6 with nothing to consume it. CargoAllocator.allocate() is also
+  seeded with a completion-order priority (see planner_node.py's
+  compute_completion_indices()) so the two active slots are always whichever
+  produce orders have their full material set earliest along the route —
+  minimizing how long unrelated queued orders' materials sit staged in
+  cargo 2-6 before their turn. Together these are meant to keep the
+  workbench overflow drop below from ever triggering in normal operation.
 
 Two-phase navigation rule:
   Every station approach is split into two legs, always via _approach(id):
@@ -438,16 +449,16 @@ class Executor:
 
             needs_revisit = False
             for mat_id in entry.get('pickup_materials', []):
+                if needs_revisit:
+                    self._approach(sid)
+                    needs_revisit = False
+
                 if self._node.cargo_is_full():
                     self._log("  ! cargo 2-6 full — overflow drop at workbench")
                     self._soft(self._node.call_post_process(), "call_post_process (pre-overflow)")
                     self._overflow_drop_at_workbench()
                     # Must revisit the station after returning from workbench.
-                    needs_revisit = True
-
-                if needs_revisit:
                     self._approach(sid)
-                    needs_revisit = False
 
                 self._log(f"  → pick mat {mat_id}")
                 self._require(
@@ -455,6 +466,21 @@ class Executor:
                     f"arm_pick_material(station={sid}, material={mat_id})",
                 )
                 self._start_ready_intransit_assembly()
+
+                # Deliver completed cargo 7/8 slot(s) right away instead of
+                # waiting for the rest of this station's picks: an already-
+                # assembled slot can't start the next queued product until
+                # it's delivered, so every pick made while it sits full is
+                # more material stranded in cargo 2-6 with nowhere to go —
+                # exactly what forces the workbench overflow drop above.
+                if self._has_ready_deliveries():
+                    self._log("  [READY] cargo 7/8 complete — delivering before continuing")
+                    self._soft(self._node.call_post_process(), "call_post_process (mid-station)")
+                    self._deliver_all()
+                    needs_revisit = True
+
+            if needs_revisit:
+                self._approach(sid)
 
             self._soft(self._node.call_post_process(), "call_post_process (storage)")
 

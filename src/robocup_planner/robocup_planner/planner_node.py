@@ -143,6 +143,10 @@ class PlannerNode(Node):
         self.declare_parameter('arm_timeout_sec', 30.0)
         self.declare_parameter('wb_timeout_sec', 120.0)
         self.declare_parameter('call_max_retries', 2)
+        # Grace period to let a timed-out nav goal's cancellation actually land
+        # on the navigator (which only accepts one goal at a time) before the
+        # next retry's send_goal_async() is issued — see navigate()'s docstring.
+        self.declare_parameter('nav_cancel_grace_sec', 5.0)
         # Lifecycle scheduling: multiply the effective cargo-slot priority
         # weight of produce orders that are also deferred-recycle orders
         # (same product_id, no initial customer stock — see Plan.deferred_recycle_ids)
@@ -180,6 +184,9 @@ class PlannerNode(Node):
         self._arm_timeout_sec: float = self.get_parameter('arm_timeout_sec').get_parameter_value().double_value
         self._wb_timeout_sec: float = self.get_parameter('wb_timeout_sec').get_parameter_value().double_value
         self._call_max_retries: int = self.get_parameter('call_max_retries').get_parameter_value().integer_value
+        self._nav_cancel_grace_sec: float = self.get_parameter(
+            'nav_cancel_grace_sec'
+        ).get_parameter_value().double_value
         self._deferred_recycle_priority_boost: float = self.get_parameter(
             'deferred_recycle_priority_boost'
         ).get_parameter_value().double_value
